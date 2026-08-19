@@ -1,0 +1,35 @@
+{
+  "name": "DX8",
+  "description": "",
+  "barcode_scan": {
+    "enabled": true,
+    "position": -10000,
+    "command": "01 54 04",
+    "timeout_ms": 5000
+  },
+  "camera": {
+    "exposure_time": 18000,
+    "gain": 0.0
+  },
+  "motion": {
+    "axis": 1,
+    "v_max": 30000,
+    "a_max": 100000,
+    "origin_position": 0,
+    "move_timeout_s": 10
+  },
+  "di_bit": 3,
+  "poll_interval_ms": 50,
+  "positions": [
+    {
+      "name": "位置一",
+      "position": -40000,
+      "scheme": "位置1方案"
+    },
+    {
+      "name": "位置二",
+      "position": -10000,
+      "scheme": "位置2方案"
+    }
+  ]
+}

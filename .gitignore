@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific - build output
+build/
+dist.zip
+# main.spec 是 PyInstaller 打包配置，需纳入版本控制，故不忽略 .spec
+
+# Data - keep structure but ignore runtime data
+data/errors/
+data/logs/
+data/config.json
+data/production data/
+
+# Model - deleted sample directories (no longer exist)
+model/deep/
+model/titile/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# DLL dependencies - too large for git, need manual placement
+*.dll
+
+# Reports
+视觉检测系统_项目总结报告.xlsx
+generate_report.py

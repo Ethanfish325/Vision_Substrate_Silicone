@@ -1,0 +1,74 @@
+{
+  "name": "位置2方案",
+  "steps": [
+    {
+      "tool_type": "MultiROI",
+      "params": {
+        "regions": [
+          {
+            "name": "title",
+            "x": 1303,
+            "y": 1557,
+            "width": 500,
+            "height": 500,
+            "enabled": true
+          },
+          {
+            "name": "long mat",
+            "x": 1144,
+            "y": 367,
+            "width": 2200,
+            "height": 600,
+            "enabled": true
+          }
+        ],
+        "use_percentage": false,
+        "input_source": "原始图像"
+      },
+      "enabled": true,
+      "judge_rule": null
+    },
+    {
+      "tool_type": "TemplateMatch",
+      "params": {
+        "mode": "standard",
+        "method": "TM_CCOEFF_NORMED",
+        "threshold": 0.8,
+        "template_path": "model/long_mat.jpg",
+        "template_data": null,
+        "angle_start": -30,
+        "angle_end": 30,
+        "angle_step": 5,
+        "feature_mode": "sift",
+        "min_matches": 10,
+        "nms_distance": 20,
+        "use_mask": false,
+        "mask_path": "",
+        "_input_source": "region:long mat"
+      },
+      "enabled": true,
+      "judge_rule": null
+    },
+    {
+      "tool_type": "TemplateMatch",
+      "params": {
+        "mode": "standard",
+        "method": "TM_CCOEFF_NORMED",
+        "threshold": 0.8,
+        "template_path": "model/title1.jpg",
+        "template_data": null,
+        "angle_start": -30,
+        "angle_end": 30,
+        "angle_step": 5,
+        "feature_mode": "sift",
+        "min_matches": 10,
+        "nms_distance": 20,
+        "use_mask": false,
+        "mask_path": "",
+        "_input_source": "region:title"
+      },
+      "enabled": true,
+      "judge_rule": null
+    }
+  ]
+}

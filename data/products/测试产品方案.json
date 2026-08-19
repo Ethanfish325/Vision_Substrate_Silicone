@@ -1,0 +1,40 @@
+{
+  "name": "测试产品方案",
+  "description": "",
+  "barcode_scan": {
+    "enabled": true,
+    "position": -60000,
+    "command": "01 54 04",
+    "timeout_ms": 5000
+  },
+  "camera": {
+    "exposure_time": 18000,
+    "gain": 0.0
+  },
+  "motion": {
+    "axis": 1,
+    "v_max": 50000,
+    "a_max": 100000,
+    "origin_position": 0,
+    "move_timeout_s": 10
+  },
+  "di_bit": 3,
+  "di_bit_ok": 0,
+  "di_bit_ng": 1,
+  "di_bit_reset": 2,
+  "reset_speed": 20000,
+  "reset_acc": 10000,
+  "poll_interval_ms": 50,
+  "positions": [
+    {
+      "name": "False",
+      "position": -50000,
+      "scheme": "位置1方案"
+    },
+    {
+      "name": "False",
+      "position": -25000,
+      "scheme": "位置2方案"
+    }
+  ]
+}
