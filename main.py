@@ -23,7 +23,7 @@ def main():
     setup_high_dpi()
 
     app = QApplication(sys.argv)
-    app.setApplicationName("基板硅胶视觉检测系统")
+    app.setApplicationName("PCBA导热硅胶检测设备")
     app.setApplicationVersion("1.0.0")
 
     # 设置应用图标
@@ -31,7 +31,7 @@ def main():
         app.setWindowIcon(QIcon(ICON_FILE))
 
     init_logger() 
-    log_info("=== 基板硅胶视觉检测系统启动 ===")
+    log_info("=== PCBA导热硅胶检测设备启动 ===")
 
     ensure_dirs()
  

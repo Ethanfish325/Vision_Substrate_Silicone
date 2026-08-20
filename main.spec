@@ -212,21 +212,6 @@ for _dll_name in ['GxIAPI.dll', 'DxImageProc.dll']:
 for _dll_path in _daheng_dlls:
     binaries.append((_dll_path, '.'))  # '.' 表示 _internal/ 根目录
 
-# ============================================================
-# NMC 运动控制卡 DLL 打包
-# ============================================================
-# core/nmc_sdk.py 通过 ctypes.CDLL('MCDLL_NET.dll') 加载
-# PyInstaller 无法自动追踪 ctypes.CDLL 调用，需要手动添加
-# nmc_sdk.load_dll() 的搜索路径包括 os.getcwd()（exe 目录）和脚本目录
-# 因此 DLL 需要放在 _internal/ 根目录下
-_nmc_dll_name = 'MCDLL_NET.dll'
-_nmc_dll_path = os.path.join(os.getcwd(), _nmc_dll_name)
-if os.path.exists(_nmc_dll_path):
-    binaries.append((_nmc_dll_path, '.'))  # '.' 表示 _internal/ 根目录
-    print(f"[INFO] 找到 NMC DLL: {_nmc_dll_path}")
-else:
-    print(f"[WARN] 未找到 NMC DLL: {_nmc_dll_name}，运动控制功能将不可用")
-
 a = Analysis(
     ['main.py'],
     pathex=[os.getcwd()],
@@ -287,21 +272,6 @@ if os.path.exists(_TOP_LEVEL_EXE):
         print(f"[后处理] 已删除顶层独立 exe: {_TOP_LEVEL_EXE}")
     except Exception as e:
         print(f"[后处理] 删除顶层 exe 失败: {e}")
-
-# ============================================================
-# 后处理：将 MCDLL_NET.dll 复制到 exe 同级目录
-# ============================================================
-# nmc_sdk.py 的 load_dll() 会搜索 os.getcwd()（即 exe 所在目录）
-# 而 binaries 打包到 _internal/，所以需要额外复制一份到 exe 目录
-_NMC_DLL_SRC = os.path.join('dist', 'Vision_Substrate_Silicone', '_internal', 'MCDLL_NET.dll')
-_NMC_DLL_DST = os.path.join('dist', 'Vision_Substrate_Silicone', 'MCDLL_NET.dll')
-if os.path.exists(_NMC_DLL_SRC) and not os.path.exists(_NMC_DLL_DST):
-    try:
-        import shutil
-        shutil.copy2(_NMC_DLL_SRC, _NMC_DLL_DST)
-        print(f"[后处理] 已复制 MCDLL_NET.dll 到 exe 同级目录")
-    except Exception as e:
-        print(f"[后处理] 复制 MCDLL_NET.dll 失败: {e}")
 
 # ============================================================
 # 后处理：删除不需要的大体积 DLL 文件（可安全删除，项目未使用）

@@ -1,4 +1,4 @@
-# 基板硅胶视觉检测系统 (Vision_Substrate_Silicone)
+# PCBA导热硅胶检测设备 (Vision_Substrate_Silicone)
 
 > **版本**: 1.0.0 | **开发语言**: Python 3.8+ | **GUI框架**: PyQt5 | **图像处理**: OpenCV 4.x | **相机SDK**: 大恒 GalaxySDK (gxipy)
 
@@ -20,13 +20,13 @@
 
 ## 项目概述
 
-本系统是一个基于机器视觉的工业检测系统，采用**流水线（Pipeline）架构**，支持用户通过图形界面配置视觉检测流程，实现产品的自动检测和判定。系统集成了**工业相机控制**、**运动控制**、**串口通信**和**自动化检测工作流**等完整工业自动化功能。
+本系统是一个基于机器视觉的工业检测系统，采用**流水线（Pipeline）架构**，支持用户通过图形界面配置视觉检测流程，实现产品的自动检测和判定。系统集成了**工业相机控制**、**串口通信**和**自动化检测工作流**等完整工业自动化功能。
 
 ### 操作模式
 
 | 模式 | 说明 |
 |------|------|
-| **自动化模式 (Automation Mode)** | DI 信号触发的多位置自动化检测，实时显示位置检测结果和统计信息 |
+| **自动化模式 (Automation Mode)** | 手动触发的多位置自动化检测，实时显示位置检测结果和统计信息 |
 | **设计模式 (Engineer Mode)** | 完整的方案编辑界面，可配置检测流水线、拖拽式编辑、实时预览 |
 
 ---
@@ -53,9 +53,8 @@ Vision_Substrate_Silicone/
 │   ├── result_storage.py            # 结果存储（CSV/JSON/图像）
 │   ├── serial_comm.py               # 串口通信核心模块
 │   ├── serial_test_workflow.py      # 串口自动测试工作流（状态机）
-│   ├── nmc_sdk.py                   # NMC 运动控制卡 Python SDK（ctypes 封装）
 │   ├── product_manager.py           # 产品配置管理器
-│   └── inspection_workflow.py       # 自动化检测工作流（DI 触发 + 多位置检测）
+│   └── inspection_workflow.py       # 自动化检测工作流（手动触发 + 多位置检测）
 │
 ├── ui/                              # UI 界面模块
 │   ├── __init__.py
@@ -72,8 +71,7 @@ Vision_Substrate_Silicone/
 │       ├── result_panel.py          # 结果显示面板
 │       ├── serial_dialog.py         # 串口通信对话框
 │       ├── step_slot_widget.py      # 步骤插槽控件（支持拖拽排序）
-│       ├── zoomable_label.py        # 可缩放图片显示控件
-│       └── nmc_control_dialog.py    # NMC 运动控制对话框
+│       └── zoomable_label.py        # 可缩放图片显示控件
 │
 ├── vision/                          # 视觉算法模块
 │   ├── __init__.py
@@ -123,8 +121,7 @@ Vision_Substrate_Silicone/
 │
 └── *.dll                            # 大恒相机 SDK DLL
     ├── GxIAPI.dll                   # 相机 API 库
-    ├── DxImageProc.dll              # 图像处理库
-    └── MCDLL_NET.dll                # NMC 运动控制卡网络通信库
+    └── DxImageProc.dll              # 图像处理库
 ```
 
 ---
@@ -267,29 +264,14 @@ BGR 图像输出
 - **状态机**：`IDLE → WAITING_TRIGGER → CAPTURING → TESTING → SENDING_RESULT`
 - **策略模式设计**：`TriggerParser`（触发解析）、`ResultSender`（结果发送）均可扩展
 
-### 7. 运动控制（NMC 运动控制卡）
+### 7. 自动化检测工作流
 
-- 基于 `MCDLL_NET.dll` 的 **ctypes 封装**
-- 支持 NMC3401（4 轴运动控制卡）
-- 核心功能：
-  - 控制卡连接/断开（TCP/IP 网络通信）
-  - 轴参数配置（脉冲模式、位置、编码器、速度）
-  - 伺服使能/报警
-  - 软件限位
-  - 回零
-  - JOG 点动
-  - 单轴点位运动（绝对/相对定位）
-  - 轴状态监测
-  - 数字 I/O 读写（DI/DO）
-
-### 8. 自动化检测工作流
-
-由 **DI 信号触发**的多位置自动化检测工作流：
+由 **手动触发**（或后续 SMC 轴控制触发）的多位置自动化检测工作流：
 
 ```
-IDLE → MONITORING → MOVING → CAPTURING → TESTING
-    → (循环: MOVING → CAPTURING → TESTING 直到所有位置完成)
-    → RETURNING → SHOW_RESULT → MONITORING
+IDLE → MONITORING → WAITING → SCANNING → CAPTURING → TESTING
+    → (循环: CAPTURING → TESTING 直到所有位置完成)
+    → SHOW_RESULT → MONITORING
 ```
 
 - 产品配置管理：相机参数、运动参数、检测位置列表、条码扫描
@@ -332,9 +314,8 @@ IDLE → MONITORING → MOVING → CAPTURING → TESTING
 | [`result_storage.py`](core/result_storage.py) | 结果存储：NG 数据（图像+JSON）、OK 日志（CSV）、过期清理 | — |
 | [`serial_comm.py`](core/serial_comm.py) | 串口通信：端口扫描、参数配置、异步读取线程、收发统计 | QThread 异步读取 |
 | [`serial_test_workflow.py`](core/serial_test_workflow.py) | 串口自动测试工作流：状态机、触发解析、结果发送 | **状态机**、**策略模式** |
-| [`nmc_sdk.py`](core/nmc_sdk.py) | NMC 运动控制卡 SDK：ctypes 封装 DLL，轴控制、I/O 读写 | ctypes FFI |
 | [`product_manager.py`](core/product_manager.py) | 产品配置管理：CRUD 操作、默认配置模板 | 函数式 |
-| [`inspection_workflow.py`](core/inspection_workflow.py) | 自动化检测工作流：DI 触发、多位置检测、运动控制 | **状态机**、QTimer 轮询 |
+| [`inspection_workflow.py`](core/inspection_workflow.py) | 自动化检测工作流：手动触发、多位置检测、扫码、视觉检测 | **状态机**、QTimer |
 
 ### `vision/` — 视觉算法模块
 
@@ -348,7 +329,7 @@ IDLE → MONITORING → MOVING → CAPTURING → TESTING
 
 | 文件 | 职责 |
 |------|------|
-| [`main_window.py`](ui/main_window.py) | 主窗口：自动化/设计双模式、菜单栏、相机控制、串口通信、运动控制、用户登录 |
+| [`main_window.py`](ui/main_window.py) | 主窗口：自动化/设计双模式、菜单栏、相机控制、串口通信、用户登录 |
 | [`constants.py`](ui/constants.py) | UI 常量：颜色、图标、样式表 |
 | [`inspection_panel.py`](ui/inspection_panel.py) | 检测面板 |
 | [`widgets/camera_panel.py`](ui/widgets/camera_panel.py) | 相机控制面板：曝光/增益/帧率/白平衡 R/G/B 调节 |
@@ -360,7 +341,6 @@ IDLE → MONITORING → MOVING → CAPTURING → TESTING
 | [`widgets/zoomable_label.py`](ui/widgets/zoomable_label.py) | 可缩放图片控件：滚轮缩放、拖拽平移、双击重置 |
 | [`widgets/step_slot_widget.py`](ui/widgets/step_slot_widget.py) | 步骤插槽控件：拖拽排序 |
 | [`widgets/flow_canvas.py`](ui/widgets/flow_canvas.py) | 流程画布 |
-| [`widgets/nmc_control_dialog.py`](ui/widgets/nmc_control_dialog.py) | NMC 运动控制对话框 |
 
 ### `camera_manager.py` — 相机管理
 
@@ -403,7 +383,7 @@ IDLE → MONITORING → MOVING → CAPTURING → TESTING
 2. **安装大恒 GalaxySDK**
 
    - 从大恒官网下载并安装 GalaxySDK（包含 gxipy Python 包）
-   - 或将 `gxipy/` 目录及 `GxIAPI.dll`、`DxImageProc.dll`、`MCDLL_NET.dll` 放置到项目根目录（已预置）
+   - 或将 `gxipy/` 目录及 `GxIAPI.dll`、`DxImageProc.dll` 放置到项目根目录（已预置）
    - 确保 DLL 在系统 PATH 或程序运行目录中可被加载
 
 3. **运行程序**
@@ -437,7 +417,7 @@ gxipy               # 大恒 GalaxySDK（内置于项目 gxipy/ 目录）
 1. 在工程师模式下创建产品配置（包含相机参数、运动参数、检测位置、条码扫描配置）
 2. 为每个位置关联视觉方案
 3. 切换到自动化模式，选择产品
-4. 系统自动监听 DI 信号，触发后自动执行：移动 → 拍照 → 检测 → 退回原点
+4. 点击「启动监听」后，点击「手动触发」执行：拍照 → 检测
 5. 实时查看各位置检测结果（OK/NG）和统计信息
 
 ### 3. 设计模式（工程师模式）
@@ -521,8 +501,6 @@ pyinstaller main.spec
 | [`footpad_detect_robustness_plan.md`](plans/footpad_detect_robustness_plan.md) | 脚垫检测鲁棒性计划 |
 | [`hikvision_to_daheng_migration_plan.md`](plans/hikvision_to_daheng_migration_plan.md) | 海康威视到大恒迁移计划 |
 | [`inspection_workflow_plan.md`](plans/inspection_workflow_plan.md) | 检测工作流计划 |
-| [`nmc_di_input_monitor_plan.md`](plans/nmc_di_input_monitor_plan.md) | NMC DI 输入监控计划 |
-| [`nmc_motion_control_integration_plan.md`](plans/nmc_motion_control_integration_plan.md) | NMC 运动控制集成计划 |
 | [`operator_optimization_plan.md`](plans/operator_optimization_plan.md) | 操作员模式优化计划 |
 | [`overlay_image_implementation_plan.md`](plans/overlay_image_implementation_plan.md) | 叠加图层实现计划 |
 | [`roi_result_display_plan.md`](plans/roi_result_display_plan.md) | ROI 结果显示计划 |
@@ -568,12 +546,11 @@ pyinstaller main.spec
 - 相机面板：图像显示最小尺寸从 `640x480` 降至 `400x300`
 - 参数配置对话框：最小尺寸从 `960x600` 降至 `800x500`
 - 所有对话框（登录、相机设置、产品配置等）尺寸相应缩小
-- 轴控制/回零控制标签页：控件尺寸缩小约 25%
 
 ### v2.3.0 (2026-06-26)
 
 - **相机 SDK 迁移**：海康威视 MVS → 大恒 GalaxySDK (gxipy)
-- 新增 `gxipy/` 目录及配套 DLL（`GxIAPI.dll`、`DxImageProc.dll`、`MCDLL_NET.dll`）
+- 新增 `gxipy/` 目录及配套 DLL（`GxIAPI.dll`、`DxImageProc.dll`）
 - 重写 `camera_manager.py`：大恒 SDK 设备枚举、打开/关闭、取流、参数读写
 - 新增跨网段设备搜索（同网段未发现时自动切换）
 - 新增 GigE 网络参数优化（包大小、延迟、帧传输）
@@ -645,7 +622,6 @@ pyinstaller main.spec
 | **GUI 框架** | PyQt5（Qt 信号/槽机制） |
 | **图像处理** | OpenCV 4.x（numpy 底层） |
 | **工业相机** | 大恒 GalaxySDK（gxipy） |
-| **运动控制** | NMC 运动控制卡（ctypes + MCDLL_NET.dll） |
 | **串口通信** | pyserial（异步 QThread 读取） |
 | **打包部署** | PyInstaller |
 | **数据存储** | JSON（方案/配置/用户）、CSV（日志）、图像文件 |
@@ -666,5 +642,5 @@ pyinstaller main.spec
 1. **模块化分层**：`core/`（业务逻辑）→ `vision/`（视觉算法）→ `ui/`（界面展示）→ `camera_manager.py`（硬件抽象）
 2. **可扩展性**：视觉工具通过注册机制动态加载，新增工具只需在对应模块添加类
 3. **设计模式应用**：单例模式（配置/日志/相机）、状态机（工作流）、策略模式（串口解析/发送）、抽象基类（视觉工具）
-4. **工业级特性**：DI 触发、运动控制、串口通信、自动化工作流、结果追溯
+4. **工业级特性**：串口通信、自动化工作流、结果追溯
 5. **兼容性**：支持中文/英文工具名映射，兼容旧版方案文件格式

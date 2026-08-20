@@ -370,9 +370,25 @@ class InspectionPanel(QWidget):
             QPushButton:disabled { background-color: #2d2d2d; color: #555; border-color: #3a3a3a; }
         """)
 
+        # 手动触发按钮（替代原 DI 触发）
+        self._btn_trigger = QPushButton("⚡ 手动触发")
+        self._btn_trigger.setMinimumHeight(28)
+        self._btn_trigger.setEnabled(False)
+        self._btn_trigger.setStyleSheet("""
+            QPushButton {
+                background-color: #1565C0; color: #fff; font-size: 13px;
+                font-weight: bold; padding: 2px 10px;
+                border: 1px solid #1976D2; border-radius: 3px;
+            }
+            QPushButton:hover { background-color: #1976D2; }
+            QPushButton:disabled { background-color: #2d2d2d; color: #555; border-color: #3a3a3a; }
+        """)
+        self._btn_trigger.setToolTip("手动触发一次检测流程")
+
         top_layout.addWidget(self._btn_start)
         top_layout.addWidget(self._btn_stop)
         top_layout.addWidget(self._btn_reset)
+        top_layout.addWidget(self._btn_trigger)
 
         main_layout.addWidget(top_bar)
 
@@ -469,6 +485,7 @@ class InspectionPanel(QWidget):
         self._btn_start.clicked.connect(self._on_start_clicked)
         self._btn_stop.clicked.connect(self._on_stop_clicked)
         self._btn_reset.clicked.connect(self._on_reset_clicked)
+        self._btn_trigger.clicked.connect(self._on_trigger_clicked)
         self._product_combo.currentTextChanged.connect(self._on_product_changed)
         self._btn_reload.clicked.connect(self._on_reload_clicked)
 
@@ -552,6 +569,7 @@ class InspectionPanel(QWidget):
         self._btn_reload.setEnabled(False)
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
+        self._btn_trigger.setEnabled(True)
         self._product_combo.setEnabled(False)
         self._final_result_label.setText("--")
         self._final_result_label.setStyleSheet("""
@@ -574,10 +592,22 @@ class InspectionPanel(QWidget):
             self._workflow.stop_monitoring()
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
+        self._btn_trigger.setEnabled(False)
         self._product_combo.setEnabled(True)
         self._btn_reload.setEnabled(True)
         self._append_log("已停止自动化检测")
         self.stop_requested.emit()
+
+    def _on_trigger_clicked(self):
+        """手动触发按钮点击 - 触发一次检测流程"""
+        if self._workflow is None:
+            self._append_log("错误: 工作流未初始化")
+            return
+        if self._workflow.product_config is None:
+            QMessageBox.warning(self, "提示", "请先选择产品型号")
+            return
+        self._append_log("手动触发检测...")
+        self._workflow.start_inspection()
 
     def _on_reload_clicked(self):
         """重新加载当前产品方案"""
@@ -593,6 +623,7 @@ class InspectionPanel(QWidget):
             self._workflow.reset_error()
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
+        self._btn_trigger.setEnabled(False)
         self._product_combo.setEnabled(True)
         self._state_display.setText("空闲")
         self._state_display.setStyleSheet("""
@@ -640,13 +671,11 @@ class InspectionPanel(QWidget):
         """工作流状态变化"""
         state_names = {
             InspectionWorkflow.State.IDLE: "空闲",
-            InspectionWorkflow.State.MONITORING: "等待DI触发",
+            InspectionWorkflow.State.MONITORING: "等待触发",
             InspectionWorkflow.State.WAITING: "等待工件放稳",
-            InspectionWorkflow.State.MOVING: "移动中",
             InspectionWorkflow.State.SCANNING: "扫码中",
             InspectionWorkflow.State.CAPTURING: "拍照中",
             InspectionWorkflow.State.TESTING: "检测中",
-            InspectionWorkflow.State.RETURNING: "退回原点",
             InspectionWorkflow.State.SHOW_RESULT: "显示结果",
             InspectionWorkflow.State.WAITING_FOR_CONFIRM: "等待确认",
             InspectionWorkflow.State.ERROR: "错误",
@@ -664,11 +693,9 @@ class InspectionPanel(QWidget):
             color = "#4fc3f7"
             bg = "#1a2a3a"
             border = "#4A90D9"
-        elif state in (InspectionWorkflow.State.MOVING,
-                       InspectionWorkflow.State.SCANNING,
+        elif state in (InspectionWorkflow.State.SCANNING,
                        InspectionWorkflow.State.CAPTURING,
-                       InspectionWorkflow.State.TESTING,
-                       InspectionWorkflow.State.RETURNING):
+                       InspectionWorkflow.State.TESTING):
             color = "#FFA000"
             bg = "#2a2a1a"
             border = "#FF8F00"
@@ -901,6 +928,7 @@ class InspectionPanel(QWidget):
         self._append_log(f"错误: {error_msg}")
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
+        self._btn_trigger.setEnabled(False)
 
     def _on_trigger_count_changed(self, count: int):
         """触发次数更新"""
