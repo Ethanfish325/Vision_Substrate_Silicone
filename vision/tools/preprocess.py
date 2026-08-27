@@ -272,7 +272,8 @@ class MultiROI(VisionTool):
         return ToolResult(
             success=True,
             passed=True,
-            processed_image=display,
+            # processed_image 返回原始图像（不绘制 ROI 框），避免污染后续步骤输入
+            processed_image=img,
             overlay_image=overlay,
             regions=regions,
             data={"region_count": len(regions)},

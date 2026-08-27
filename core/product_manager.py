@@ -64,6 +64,8 @@ def load_product(name: str) -> Optional[Dict[str, Any]]:
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             config = json.load(f)
+        # 兼容旧版配置：迁移为二维网格 + 双轴结构
+        config = migrate_config(config)
         return config
     except (json.JSONDecodeError, OSError) as e:
         log_error(f"加载产品配置失败 [{name}]: {e}")
@@ -118,15 +120,29 @@ def delete_product(name: str) -> bool:
         return False
 
 
-def create_default_config(name: str) -> Dict[str, Any]:
-    """创建默认产品配置模板
+def create_default_config(name: str, rows: int = 1, cols: int = 1) -> Dict[str, Any]:
+    """创建默认产品配置模板（二维网格 + 双轴结构）
 
     Args:
         name: 产品型号名称
+        rows: 网格行数
+        cols: 网格列数
 
     Returns:
         Dict: 默认产品配置
     """
+    positions = []
+    for r in range(1, rows + 1):
+        for c in range(1, cols + 1):
+            positions.append({
+                "row": r,
+                "col": c,
+                "name": f"{r}.{c}",
+                "x": (c - 1) * 1000,
+                "y": (r - 1) * 1000,
+                "scheme": ""
+            })
+
     return {
         "name": name,
         "description": "",
@@ -144,22 +160,115 @@ def create_default_config(name: str) -> Dict[str, Any]:
             "white_balance": {"red": 1.0, "green": 1.0, "blue": 1.0}
         },
 
-        "motion": {
-            "axis": 1,
-            "v_max": 50000,
-            "a_max": 100000,
-            "origin_position": 0,
-            "move_timeout_s": 10
+        "grid": {
+            "rows": rows,
+            "cols": cols
         },
 
-        "positions": [
-            {
-                "name": "位置1",
-                "position": 10000,
-                "scheme": ""
+        "motion": {
+            "x_axis": 0,
+            "y_axis": 1,
+            "x": {
+                "v_max": 50000,
+                "a_max": 100000,
+                "origin_position": 0,
+                "move_timeout_s": 10
+            },
+            "y": {
+                "v_max": 50000,
+                "a_max": 100000,
+                "origin_position": 0,
+                "move_timeout_s": 10
             }
-        ],
+        },
+
+        "home": {
+            "start_x": 0,
+            "start_y": 0,
+            "end_x": 0,
+            "end_y": 0
+        },
+
+        "positions": positions,
 
         "di_bit": 3,
         "poll_interval_ms": 50
     }
+
+
+def migrate_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """将旧版产品配置迁移为二维网格 + 双轴结构。
+
+    旧结构:
+        motion: {axis, v_max, a_max, origin_position, move_timeout_s}
+        positions: [{name, position, scheme}]
+
+    新结构:
+        grid: {rows, cols}
+        motion: {x_axis, y_axis, x:{...}, y:{...}}
+        home: {start_x, start_y, end_x, end_y}
+        positions: [{row, col, name, x, y, scheme}]
+
+    迁移规则:
+        - 旧 positions 视为单行多列（rows=1, cols=N），x=position, y=0。
+        - 旧 motion 单轴参数同时应用到 X、Y 两轴。
+        - 若已是新结构（含 grid 或 positions 含 row/col），则原样返回。
+
+    Args:
+        config: 产品配置字典
+
+    Returns:
+        Dict: 迁移后的配置
+    """
+    if not isinstance(config, dict):
+        return config
+
+    # 已是新结构：positions 含 row/col 或存在 grid 字段
+    positions = config.get("positions", [])
+    if config.get("grid") or (positions and isinstance(positions[0], dict)
+                              and ("row" in positions[0] or "col" in positions[0])):
+        return config
+
+    # ── 迁移 motion ──
+    old_motion = config.get("motion", {}) or {}
+    new_motion = {
+        "x_axis": old_motion.get("axis", 0),
+        "y_axis": 1 if old_motion.get("axis", 0) != 1 else 0,
+        "x": {
+            "v_max": old_motion.get("v_max", 50000),
+            "a_max": old_motion.get("a_max", 100000),
+            "origin_position": old_motion.get("origin_position", 0),
+            "move_timeout_s": old_motion.get("move_timeout_s", 10)
+        },
+        "y": {
+            "v_max": old_motion.get("v_max", 50000),
+            "a_max": old_motion.get("a_max", 100000),
+            "origin_position": old_motion.get("origin_position", 0),
+            "move_timeout_s": old_motion.get("move_timeout_s", 10)
+        }
+    }
+
+    # ── 迁移 positions（单行多列）──
+    new_positions = []
+    for i, pos in enumerate(positions):
+        if not isinstance(pos, dict):
+            continue
+        new_positions.append({
+            "row": 1,
+            "col": i + 1,
+            "name": pos.get("name", f"1.{i + 1}"),
+            "x": pos.get("position", 0),
+            "y": 0,
+            "scheme": pos.get("scheme", "")
+        })
+
+    config["grid"] = {"rows": 1, "cols": len(new_positions) if new_positions else 1}
+    config["motion"] = new_motion
+    config["home"] = {
+        "start_x": 0,
+        "start_y": 0,
+        "end_x": 0,
+        "end_y": 0
+    }
+    config["positions"] = new_positions
+    return config

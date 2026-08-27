@@ -89,6 +89,107 @@ class ResultStorage:
             '判定': 'NG',
         })
 
+    def save_board_data(self, scheme_name: str, sn: str,
+                        annotated_image: np.ndarray, passed: bool,
+                        save_thumbnail: bool = True) -> Optional[str]:
+        """保存单个板卡（点位）的检测数据，并按 SN 生成 XML（供 MES 上传）。
+
+        目录结构:
+            data/production data/
+                YYYY-MM-DD/
+                    OK/ 或 NG/
+                        {SN}/
+                            {SN}_{HHMMSS}_thumbnail.jpg   # OK 缩略图
+                            {SN}_{HHMMSS}_result.jpg      # NG 标注结果图
+                            {SN}.xml                       # MES 上传用 XML
+
+        Args:
+            scheme_name: 方案名称
+            sn: 板卡 SN（QR 识别结果），作为目录/文件名 ID
+            annotated_image: 标注结果图
+            passed: 该板卡是否通过（决定存 OK 还是 NG 目录）
+            save_thumbnail: 是否保存缩略图（OK 时保存缩略图，NG 时保存原图）
+
+        Returns:
+            Optional[str]: 保存的图片绝对路径；失败返回 None
+        """
+        from core.log_manager import log_info, log_error
+
+        date_str, time_str = self._get_date_time_strs()
+        safe_id = self._sanitize_id(sn)
+
+        if passed:
+            board_dir = self._get_ok_dir(date_str, safe_id)
+        else:
+            board_dir = self._get_ng_dir(date_str, safe_id)
+        os.makedirs(board_dir, exist_ok=True)
+
+        # 保存图片
+        if passed and save_thumbnail:
+            img_path = os.path.join(board_dir, f"{safe_id}_{time_str}_thumbnail.jpg")
+            self._save_thumbnail(annotated_image, img_path, max_size=800)
+        else:
+            img_path = os.path.join(board_dir, f"{safe_id}_{time_str}_result.jpg")
+            cv2.imwrite(img_path, annotated_image)
+
+        # 生成 XML（供 MES 上传）
+        self._write_board_xml(board_dir, safe_id, sn, passed, img_path)
+
+        # 追加 CSV 日志
+        if passed:
+            self._append_ok_csv(date_str, {
+                '时间': time_str,
+                '方案': scheme_name,
+                '产品ID': sn,
+                '判定': 'OK',
+            })
+        else:
+            self._append_ng_csv(date_str, {
+                '时间': time_str,
+                '方案': scheme_name,
+                '产品ID': sn,
+                '判定': 'NG',
+            })
+
+        log_info(f"板卡数据已保存: {img_path}")
+        return img_path
+
+    def _write_board_xml(self, board_dir: str, safe_id: str, sn: str,
+                         passed: bool, img_path: str):
+        """生成板卡测试信息 XML（供 MES 上传）。
+
+        格式:
+            <test test_sn="**********" test_date="YYYY/MM/DD HH:MM:SS"
+                  test_result="OK/NG" imgurl="******"/>
+
+        Args:
+            board_dir: 板卡目录
+            safe_id: 安全化后的 SN（用于文件名）
+            sn: 原始 SN
+            passed: 是否通过
+            img_path: 图片绝对路径
+        """
+        from core.log_manager import log_info, log_error
+
+        now = datetime.now()
+        test_date = now.strftime('%Y/%m/%d %H:%M:%S')
+        test_result = "OK" if passed else "NG"
+        # imgurl 使用绝对路径
+        imgurl = os.path.abspath(img_path)
+
+        xml_content = (
+            f'<test test_sn="{sn}" test_date="{test_date}" '
+            f'test_result="{test_result}" imgurl="{imgurl}"/>'
+        )
+
+        xml_path = os.path.join(board_dir, f"{safe_id}.xml")
+        try:
+            with open(xml_path, 'w', encoding='utf-8') as f:
+                f.write(xml_content)
+            log_info(f"XML 已生成: {xml_path}")
+        except OSError as e:
+            log_error(f"写入 XML 失败 [{xml_path}]: {e}")
+
     # ── 路径辅助 ──
 
     @staticmethod

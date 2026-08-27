@@ -579,6 +579,7 @@ class MultiROIEditorLabel(QLabel):
         self._image_h = 0
         self._temp_region_idx = -1
         self._base_pixmap = None
+        self._display_scale = 1.0  # 原始图像 → 显示图像的缩放比例
         self.setMouseTracking(True)
 
     def set_image_size(self, w, h):
@@ -589,16 +590,38 @@ class MultiROIEditorLabel(QLabel):
         if cv_img is None:
             return
         try:
+            # 记录原始图像尺寸（用于 ROI 坐标换算）
+            orig_h, orig_w = cv_img.shape[:2]
+            self._image_w = orig_w
+            self._image_h = orig_h
+
+            # 限制图像最大尺寸，避免 QImage 内存不足
+            MAX_DISPLAY_SIZE = 2000  # 最长边上限（像素）
+            h, w = cv_img.shape[:2]
+            scale = 1.0
+            if max(h, w) > MAX_DISPLAY_SIZE:
+                scale = MAX_DISPLAY_SIZE / max(h, w)
+                cv_img = cv2.resize(cv_img, (int(w * scale), int(h * scale)),
+                                    interpolation=cv2.INTER_AREA)
+                h, w = cv_img.shape[:2]
+
             if len(cv_img.shape) == 2:
-                h, w = cv_img.shape
                 q_img = QImage(cv_img.data, w, h, w, QImage.Format_Grayscale8)
             else:
                 h, w, ch = cv_img.shape
                 rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
                 q_img = QImage(rgb_img.data, w, h, ch * w, QImage.Format_RGB888)
+
+            # 检查 QImage 是否创建成功（内存不足时返回 null）
+            if q_img.isNull():
+                self.setText("图像过大，内存不足，无法显示")
+                self._base_pixmap = None
+                return
+
             self._base_pixmap = QPixmap.fromImage(q_img)
-            self._image_w = w
-            self._image_h = h
+            # 记录显示缩放比例（原始图像 → 显示图像），用于 ROI 坐标换算
+            self._display_scale = scale
+
             self.update()
         except Exception as e:
             self.setText(f"图像加载错误: {e}")
@@ -610,29 +633,45 @@ class MultiROIEditorLabel(QLabel):
         pix_h = self._base_pixmap.height()
         label_w = self.width()
         label_h = self.height()
-        if label_w <= 0 or label_h <= 0:
+        # 空 pixmap 或加载失败（宽高为 0）时兜底，避免除零
+        if label_w <= 0 or label_h <= 0 or pix_w <= 0 or pix_h <= 0:
             return QRect(0, 0, 0, 0), 1.0, 1.0
         scale = min(label_w / pix_w, label_h / pix_h)
         scaled_w = int(pix_w * scale)
         scaled_h = int(pix_h * scale)
         x = (label_w - scaled_w) // 2
         y = (label_h - scaled_h) // 2
-        scale_x = self._image_w / scaled_w if scaled_w > 0 else 1
-        scale_y = self._image_h / scaled_h if scaled_h > 0 else 1
+        # 显示图像像素 → 标签像素 的换算比例
+        scale_x = pix_w / scaled_w if scaled_w > 0 else 1
+        scale_y = pix_h / scaled_h if scaled_h > 0 else 1
         return QRect(x, y, scaled_w, scaled_h), scale_x, scale_y
 
     def _image_to_label(self, img_x, img_y):
+        """将原始图像坐标（ROI 坐标）转换为标签坐标。
+
+        先按 _display_scale 缩放到显示图像坐标，再转换为标签坐标。
+        """
         rect, sx, sy = self._get_scaled_rect()
-        label_x = rect.x() + img_x / sx if sx > 0 else rect.x()
-        label_y = rect.y() + img_y / sy if sy > 0 else rect.y()
+        # 原始图像坐标 → 显示图像坐标
+        disp_x = img_x * self._display_scale
+        disp_y = img_y * self._display_scale
+        label_x = rect.x() + disp_x / sx if sx > 0 else rect.x()
+        label_y = rect.y() + disp_y / sy if sy > 0 else rect.y()
         return int(label_x), int(label_y)
 
     def _label_to_image(self, label_x, label_y):
+        """将标签坐标转换为原始图像坐标（ROI 坐标）。
+
+        先转换为显示图像坐标，再按 _display_scale 还原为原始图像坐标。
+        """
         rect, sx, sy = self._get_scaled_rect()
-        img_x = (label_x - rect.x()) * sx
-        img_y = (label_y - rect.y()) * sy
-        img_x = max(0, min(img_x, self._image_w - 1)) if self._image_w > 0 else img_x
-        img_y = max(0, min(img_y, self._image_h - 1)) if self._image_h > 0 else img_y
+        disp_x = (label_x - rect.x()) * sx
+        disp_y = (label_y - rect.y()) * sy
+        # 显示图像坐标 → 原始图像坐标
+        img_x = disp_x / self._display_scale if self._display_scale > 0 else disp_x
+        img_y = disp_y / self._display_scale if self._display_scale > 0 else disp_y
+        img_x = max(0, min(img_x, self._image_w / self._display_scale - 1)) if self._image_w > 0 else img_x
+        img_y = max(0, min(img_y, self._image_h / self._display_scale - 1)) if self._image_h > 0 else img_y
         return int(img_x), int(img_y)
 
     def paintEvent(self, event):

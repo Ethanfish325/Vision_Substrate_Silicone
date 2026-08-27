@@ -244,7 +244,6 @@ class InspectionPanel(QWidget):
     def __init__(self, workflow: InspectionWorkflow, parent=None):
         super().__init__(parent)
         self._workflow = workflow
-        self._position_widgets: List[PositionResultWidget] = []
         self._ng_dialog = None  # NG 确认对话框引用，用于实体按键关闭
 
         self._setup_ui()
@@ -385,10 +384,26 @@ class InspectionPanel(QWidget):
         """)
         self._btn_trigger.setToolTip("手动触发一次检测流程")
 
+        # 取出确认按钮（OK 流程运动到结束位后，工人按下返回起始位）
+        self._btn_takeout = QPushButton("✅ 取出确认")
+        self._btn_takeout.setMinimumHeight(28)
+        self._btn_takeout.setEnabled(False)
+        self._btn_takeout.setStyleSheet("""
+            QPushButton {
+                background-color: #2E7D32; color: #fff; font-size: 13px;
+                font-weight: bold; padding: 2px 10px;
+                border: 1px solid #4CAF50; border-radius: 3px;
+            }
+            QPushButton:hover { background-color: #388E3C; }
+            QPushButton:disabled { background-color: #2d2d2d; color: #555; border-color: #3a3a3a; }
+        """)
+        self._btn_takeout.setToolTip("运动到结束位后，工人取出板卡并按下此按钮返回起始位")
+
         top_layout.addWidget(self._btn_start)
         top_layout.addWidget(self._btn_stop)
         top_layout.addWidget(self._btn_reset)
         top_layout.addWidget(self._btn_trigger)
+        top_layout.addWidget(self._btn_takeout)
 
         main_layout.addWidget(top_bar)
 
@@ -427,10 +442,10 @@ class InspectionPanel(QWidget):
 
         main_layout.addWidget(stats_bar)
 
-        # ── 中间区域: 图像网格 + 日志 ──
+        # ── 中间区域: 拼接整图 + 日志 ──
         middle_splitter = QSplitter(Qt.Horizontal)
 
-        # 左侧: 图像网格
+        # 左侧: 拼接整图显示区
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -442,12 +457,19 @@ class InspectionPanel(QWidget):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         """)
 
-        self._grid_container = QWidget()
-        self._grid_layout = QGridLayout(self._grid_container)
-        self._grid_layout.setContentsMargins(2, 2, 2, 2)
-        self._grid_layout.setSpacing(4)
+        # 拼接整图显示控件（可缩放）
+        from .widgets.zoomable_label import ZoomableLabel
+        self._stitch_label = ZoomableLabel()
+        self._stitch_label.setAlignment(Qt.AlignCenter)
+        self._stitch_label.setStyleSheet("""
+            QLabel {
+                background-color: #0d0d0d; border: 1px solid #333;
+                border-radius: 4px; color: #555; font-size: 16px;
+            }
+        """)
+        self._stitch_label.setText("等待检测...\n（拼接整图将在此显示）")
 
-        scroll_area.setWidget(self._grid_container)
+        scroll_area.setWidget(self._stitch_label)
 
         # 右侧: 日志面板
         right_panel = QWidget()
@@ -486,6 +508,7 @@ class InspectionPanel(QWidget):
         self._btn_stop.clicked.connect(self._on_stop_clicked)
         self._btn_reset.clicked.connect(self._on_reset_clicked)
         self._btn_trigger.clicked.connect(self._on_trigger_clicked)
+        self._btn_takeout.clicked.connect(self._on_takeout_clicked)
         self._product_combo.currentTextChanged.connect(self._on_product_changed)
         self._btn_reload.clicked.connect(self._on_reload_clicked)
 
@@ -506,6 +529,9 @@ class InspectionPanel(QWidget):
         self._workflow.reset_during_confirm.connect(self._on_reset_during_confirm)
         self._workflow.total_elapsed_changed.connect(self._on_total_elapsed_changed)
         self._workflow.barcode_failed.connect(self._on_barcode_failed)
+        self._workflow.stitched_image_ready.connect(self._on_stitched_image_ready)
+        self._workflow.takeout_confirm_requested.connect(self._on_takeout_confirm_requested)
+        self._workflow.motion_state_changed.connect(self._on_motion_state_changed)
 
     def _refresh_product_list(self):
         """刷新产品列表"""
@@ -524,35 +550,14 @@ class InspectionPanel(QWidget):
             self._product_combo.setCurrentIndex(0)
 
     def _rebuild_position_grid(self, positions: List[Dict]):
-        """根据位置数量重建网格布局"""
-        # 清除旧控件
-        for widget in self._position_widgets:
-            self._grid_layout.removeWidget(widget)
-            widget.deleteLater()
-        self._position_widgets.clear()
+        """产品切换时重置拼接整图显示（主区域显示拼接整图）。"""
+        self._reset_stitch_display()
 
-        # 如果没有位置，显示提示
-        if not positions:
-            placeholder = QLabel("请选择产品型号以加载位置配置")
-            placeholder.setAlignment(Qt.AlignCenter)
-            placeholder.setStyleSheet("font-size: 20px; color: #555;")
-            self._grid_layout.addWidget(placeholder, 0, 0)
-            return
-
-        # 创建每个位置的展示控件
-        cols = 2  # 固定2列网格
-        for i, pos in enumerate(positions):
-            name = pos.get("name", f"位置{i + 1}")
-            widget = PositionResultWidget(name)
-            self._position_widgets.append(widget)
-
-            row = i // cols
-            col = i % cols
-            self._grid_layout.addWidget(widget, row, col)
-
-        # 设置网格均匀拉伸
-        for i in range(cols):
-            self._grid_layout.setColumnStretch(i, 1)
+    def _reset_stitch_display(self):
+        """重置拼接整图显示区。"""
+        if hasattr(self, '_stitch_label'):
+            self._stitch_label.clear_pixmap()
+            self._stitch_label.setText("等待检测...\n（拼接整图将在此显示）")
 
     # ── 按钮事件 ──
 
@@ -578,9 +583,8 @@ class InspectionPanel(QWidget):
             border-radius: 4px; padding: 2px 10px;
         """)
 
-        # 重置所有位置显示
-        for w in self._position_widgets:
-            w.show_waiting()
+        # 重置拼接整图显示
+        self._reset_stitch_display()
 
         self._append_log("启动自动化检测...")
         self.start_requested.emit()
@@ -719,9 +723,42 @@ class InspectionPanel(QWidget):
 
     def _on_position_result(self, index: int, result: PositionResult):
         """单个位置检测完成"""
-        if 0 <= index < len(self._position_widgets):
-            self._position_widgets[index].show_result(result)
         self._append_log(f"位置 [{result.name}]: {'OK' if result.passed else 'NG'} - {result.message}")
+
+    def _on_stitched_image_ready(self, stitched_image):
+        """拼接整图更新 - 刷新主区域显示。"""
+        if stitched_image is None:
+            return
+        try:
+            height, width = stitched_image.shape[:2]
+            if len(stitched_image.shape) == 2:
+                bytes_per_line = width
+                q_img = QImage(stitched_image.data, width, height,
+                               bytes_per_line, QImage.Format_Grayscale8)
+            else:
+                bytes_per_line = 3 * width
+                q_img = QImage(stitched_image.data, width, height,
+                               bytes_per_line, QImage.Format_BGR888)
+            pixmap = QPixmap.fromImage(q_img)
+            self._stitch_label.set_pixmap(pixmap)
+        except Exception as e:
+            self._append_log(f"拼接图显示错误: {e}")
+
+    def _on_takeout_confirm_requested(self):
+        """运动到结束位后，请求工人取出确认。"""
+        self._btn_takeout.setEnabled(True)
+        self._append_log("已运动到结束位，请取出板卡并按下「取出确认」")
+
+    def _on_motion_state_changed(self, desc: str):
+        """运动状态变化。"""
+        self._append_log(f"运动: {desc}")
+
+    def _on_takeout_clicked(self):
+        """取出确认按钮点击 - 通知工作流返回起始位。"""
+        if self._workflow is not None:
+            self._workflow.confirm_takeout()
+        self._btn_takeout.setEnabled(False)
+        self._append_log("取出确认，返回起始位")
 
     def _on_all_results(self, final_ok: bool, results: List[PositionResult]):
         """所有位置检测完成"""

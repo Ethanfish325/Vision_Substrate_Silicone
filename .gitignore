@@ -41,3 +41,8 @@ Thumbs.db
 # Reports
 视觉检测系统_项目总结报告.xlsx
 generate_report.py
+
+# Test output images
+template_match_result.jpg
+_stitch_test.txt
+_test_*.py

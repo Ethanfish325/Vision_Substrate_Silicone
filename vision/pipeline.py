@@ -40,6 +40,7 @@ CN_TO_EN: Dict[str, str] = {
     "模板匹配": "TemplateMatch",
     "边缘匹配": "EdgeMatch",
     "快速匹配": "FastMatch",
+    "二维码识别": "QRCodeRecognize",
     "亮度测量": "BrightnessMeasure",
     "坐标转换": "CoordinateTransform",
     "计算器": "Calculator",
@@ -73,7 +74,8 @@ _TOOL_CATEGORIES: Dict[str, List[str]] = {
         "BrightnessMeasure"
     ],
     "识别": [
-        "ColorRecognition", "TemplateMatch", "EdgeMatch", "FastMatch"
+        "ColorRecognition", "TemplateMatch", "EdgeMatch", "FastMatch",
+        "QRCodeRecognize"
     ],
     "工具": [
         "CoordinateTransform", "Calculator", "LogicJudge"
@@ -91,7 +93,8 @@ def _register_all_tools():
         "measure": ["AreaMeasure", "DistanceMeasure", "PointMeasure",
                     "LineMeasure", "AngleMeasure", "ObjectCount",
                     "BrightnessMeasure"],
-        "recognize": ["ColorRecognition", "TemplateMatch", "EdgeMatch", "FastMatch"],
+        "recognize": ["ColorRecognition", "TemplateMatch", "EdgeMatch", "FastMatch",
+                      "QRCodeRecognize"],
         "utility": ["CoordinateTransform", "Calculator", "LogicJudge"],
     }
 

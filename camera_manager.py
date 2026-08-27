@@ -102,6 +102,11 @@ CAMERA_SHARPEN_STRENGTH = 0.5
 # "norm"  : NORM_MINMAX 动态拉伸（每帧自适应，亮度可能跳动）
 CAMERA_16BIT_CONVERSION = "shift"
 
+# 图像 180 度翻转（相机安装方向导致图像上下颠倒时设为 True）
+# 默认 False：不翻转。若相机图像颠倒，改为 True 即可。
+# 当前 True：水平翻转一次 + 垂直翻转一次（等价于 180 度旋转，cv2.flip(img, -1)）。
+CAMERA_FLIP_180 = True
+
 
 # ============================================================
 # 像素格式工具函数（兼容旧版接口）
@@ -317,6 +322,9 @@ def raw_to_opencv(frame_data: bytes, width: int, height: int,
             # 后处理：Gamma 校正 + 锐化（使画面接近 Galaxy Viewer 效果）
             img_bgr = _apply_gamma(img_bgr, CAMERA_GAMMA)
             img_bgr = _apply_sharpen(img_bgr, CAMERA_SHARPEN_STRENGTH)
+            # 可选 180 度翻转（相机安装方向导致图像上下颠倒时开启）
+            if CAMERA_FLIP_180:
+                img_bgr = cv2.flip(img_bgr, -1)
             return img_bgr
         
         elif is_color and channels == 3:
@@ -325,6 +333,9 @@ def raw_to_opencv(frame_data: bytes, width: int, height: int,
             # 后处理：Gamma 校正 + 锐化
             img_bgr = _apply_gamma(img_bgr, CAMERA_GAMMA)
             img_bgr = _apply_sharpen(img_bgr, CAMERA_SHARPEN_STRENGTH)
+            # 可选 180 度翻转（相机安装方向导致图像上下颠倒时开启）
+            if CAMERA_FLIP_180:
+                img_bgr = cv2.flip(img_bgr, -1)
             return img_bgr
         
         else:
@@ -338,6 +349,9 @@ def raw_to_opencv(frame_data: bytes, width: int, height: int,
             # 后处理：Gamma 校正 + 锐化
             img_bgr = _apply_gamma(img_bgr, CAMERA_GAMMA)
             img_bgr = _apply_sharpen(img_bgr, CAMERA_SHARPEN_STRENGTH)
+            # 可选 180 度翻转（相机安装方向导致图像上下颠倒时开启）
+            if CAMERA_FLIP_180:
+                img_bgr = cv2.flip(img_bgr, -1)
             return img_bgr
     
     except Exception as e:
@@ -709,7 +723,8 @@ class CameraManager:
                 class_name = f"Unknown({dev_class})"
             
             return {
-                'index':        index,
+                # open_device_by_index 要求索引从 1 开始
+                'index':        index + 1,
                 'sn':           sn,
                 'name':         model,
                 'vendor':       vendor,

@@ -1,0 +1,65 @@
+{
+  "name": "PCBA",
+  "steps": [
+    {
+      "tool_type": "MultiROI",
+      "params": {
+        "regions": [
+          {
+            "name": "QR",
+            "x": 1088,
+            "y": 368,
+            "width": 467,
+            "height": 563,
+            "enabled": true
+          },
+          {
+            "name": "label2",
+            "x": 273,
+            "y": 486,
+            "width": 629,
+            "height": 631,
+            "enabled": true
+          }
+        ],
+        "use_percentage": false
+      },
+      "enabled": true,
+      "judge_rule": null
+    },
+    {
+      "tool_type": "TemplateMatch",
+      "params": {
+        "mode": "standard",
+        "method": "TM_CCOEFF_NORMED",
+        "threshold": 0.5,
+        "template_path": "C:/Users/fyx/Desktop/1.jpg",
+        "template_data": null,
+        "angle_start": -30,
+        "angle_end": 30,
+        "angle_step": 5,
+        "feature_mode": "sift",
+        "min_matches": 10,
+        "nms_distance": 20,
+        "use_mask": false,
+        "mask_path": "",
+        "scale_min": 0.5,
+        "scale_max": 2.0,
+        "scale_step": 0.1,
+        "_input_source": "region:label2"
+      },
+      "enabled": true,
+      "judge_rule": null
+    },
+    {
+      "tool_type": "QRCodeRecognize",
+      "params": {
+        "require_pass": true,
+        "expected_prefix": "",
+        "_input_source": "region:QR"
+      },
+      "enabled": true,
+      "judge_rule": null
+    }
+  ]
+}

@@ -11,6 +11,7 @@ hidden_imports = [
     'vision.tools.measure',
     'vision.tools.recognize',
     'vision.tools.utility',
+    'vision.stitch',
     # PyQt5 必要绑定
     'PyQt5.sip',
     # gxipy 子模块

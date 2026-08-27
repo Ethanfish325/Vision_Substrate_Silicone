@@ -5,6 +5,7 @@ import numpy as np
 import cv2
 
 from .base_tool import VisionTool, ToolResult, PipelineContext
+from core.log_manager import log_warning
 
 
 class ColorRecognition(VisionTool):
@@ -516,7 +517,18 @@ class TemplateMatch(VisionTool):
         else:
             template_gray = template.copy()
 
+        # 若模板比输入图像大，自动缩放模板到输入尺寸内（cv2.matchTemplate 要求模板 ≤ 输入）
+        img_h, img_w = gray_img.shape[:2]
         th, tw = template_gray.shape[:2]
+        if th > img_h or tw > img_w:
+            scale = min(img_h / th, img_w / tw)
+            new_w = max(1, int(tw * scale))
+            new_h = max(1, int(th * scale))
+            template_gray = cv2.resize(template_gray, (new_w, new_h),
+                                       interpolation=cv2.INTER_AREA)
+            th, tw = template_gray.shape[:2]
+            log_warning(f"模板大于输入图像，已自动缩放模板到 {tw}x{th}")
+
         display = img.copy()
         overlay = np.zeros_like(img)
         matches_data = []
@@ -534,26 +546,76 @@ class TemplateMatch(VisionTool):
             method = method_map.get(method_name, cv2.TM_CCOEFF_NORMED)
             threshold = float(self.params.get("threshold", 0.8))
             nms_dist = int(self.params.get("nms_distance", 20))
+            is_sqdiff = method in [cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED]
 
-            # 标准模式支持掩膜
-            if use_mask and mask is not None:
-                if len(mask.shape) == 3:
-                    mask_gray = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+            # 多尺度匹配参数
+            scale_min = float(self.params.get("scale_min", 0.5))
+            scale_max = float(self.params.get("scale_max", 2.0))
+            scale_step = float(self.params.get("scale_step", 0.1))
+
+            # 多尺度搜索：遍历缩放比例，找出最佳匹配
+            best_score = -1.0 if not is_sqdiff else 1.0
+            best_loc = (0, 0)
+            best_tw, best_th = tw, th
+            best_scale = 1.0
+            best_result = None
+
+            th0, tw0 = template_gray.shape[:2]
+            scale = scale_min
+            while scale <= scale_max + 1e-6:
+                sw = max(1, int(round(tw0 * scale)))
+                sh = max(1, int(round(th0 * scale)))
+                # 模板不能大于输入图像
+                if sw > img_w or sh > img_h:
+                    scale += scale_step
+                    continue
+                scaled_templ = cv2.resize(template_gray, (sw, sh),
+                                          interpolation=cv2.INTER_AREA)
+                if use_mask and mask is not None:
+                    if len(mask.shape) == 3:
+                        mask_gray = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+                    else:
+                        mask_gray = mask.copy()
+                    if mask_gray.shape[:2] != scaled_templ.shape[:2]:
+                        mask_gray = cv2.resize(mask_gray, (sw, sh),
+                                               interpolation=cv2.INTER_AREA)
+                    result = cv2.matchTemplate(gray_img, scaled_templ, method, mask=mask_gray)
                 else:
-                    mask_gray = mask.copy()
-                result = cv2.matchTemplate(gray_img, template_gray, method, mask=mask_gray)
-            else:
-                result = cv2.matchTemplate(gray_img, template_gray, method)
+                    result = cv2.matchTemplate(gray_img, scaled_templ, method)
 
-            if method in [cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED]:
-                locations = np.where(result <= (1 - threshold))
-                scores = [1 - result[pt[1], pt[0]] for pt in zip(*locations[::-1])]
-            else:
-                locations = np.where(result >= threshold)
-                scores = [result[pt[1], pt[0]] for pt in zip(*locations[::-1])]
+                if is_sqdiff:
+                    min_val, _, min_loc, _ = cv2.minMaxLoc(result)
+                    if min_val < best_score:
+                        best_score = min_val
+                        best_loc = min_loc
+                        best_tw, best_th = sw, sh
+                        best_scale = scale
+                        best_result = result
+                else:
+                    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                    if max_val > best_score:
+                        best_score = max_val
+                        best_loc = max_loc
+                        best_tw, best_th = sw, sh
+                        best_scale = scale
+                        best_result = result
+                scale += scale_step
 
-            locations_list = list(zip(*locations[::-1])) if len(locations[0]) > 0 else []
-            nms_results = self._non_max_suppression(locations_list, scores, th, tw, nms_dist)
+            # 用最佳缩放的结果提取匹配位置
+            result = best_result
+            tw, th = best_tw, best_th
+            if result is not None:
+                if is_sqdiff:
+                    locations = np.where(result <= (1 - threshold))
+                    scores = [1 - result[pt[1], pt[0]] for pt in zip(*locations[::-1])]
+                else:
+                    locations = np.where(result >= threshold)
+                    scores = [result[pt[1], pt[0]] for pt in zip(*locations[::-1])]
+
+                locations_list = list(zip(*locations[::-1])) if len(locations[0]) > 0 else []
+                nms_results = self._non_max_suppression(locations_list, scores, th, tw, nms_dist)
+            else:
+                nms_results = []
 
             for x, y, score in nms_results:
                 cv2.rectangle(display, (x, y), (x + tw, y + th), (0, 255, 0), 2)
@@ -564,7 +626,8 @@ class TemplateMatch(VisionTool):
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                 matches_data.append({"x": int(x), "y": int(y),
                                       "width": int(tw), "height": int(th),
-                                      "score": float(score)})
+                                      "score": float(score),
+                                      "scale": float(best_scale)})
 
         elif mode == "rotation":
             threshold = float(self.params.get("threshold", 0.8))
@@ -609,9 +672,16 @@ class TemplateMatch(VisionTool):
 
             matches_data = [{"distance": m.distance} for m in good_matches]
 
-        # 分数阈值判断：最高分 >= threshold 才算通过
-        best_score = max([m["score"] for m in matches_data]) if matches_data else 0
-        passed = best_score >= threshold
+        # 分数阈值判断
+        if mode == "feature":
+            # 特征点匹配：用匹配点数判断（>= min_matches 才算通过）
+            min_matches = int(self.params.get("min_matches", 10))
+            best_score = float(len(matches_data))
+            passed = len(matches_data) >= min_matches
+        else:
+            # 标准/多角度匹配：最高分 >= threshold 才算通过
+            best_score = max([m["score"] for m in matches_data]) if matches_data else 0
+            passed = best_score >= threshold
 
         result_data = {
             "match_count": len(matches_data),
@@ -661,12 +731,28 @@ class TemplateMatch(VisionTool):
 
     def get_param_widgets(self, parent):
         from PyQt5.QtWidgets import (QComboBox, QDoubleSpinBox, QSpinBox,
-                                      QPushButton, QHBoxLayout, QWidget,
-                                      QLabel, QFileDialog, QCheckBox)
+                                      QPushButton, QHBoxLayout, QVBoxLayout,
+                                      QWidget, QLabel, QFileDialog, QCheckBox)
 
-        widgets = []
+        # 返回一个容器 QWidget，内部根据所选模式动态显示/隐藏对应参数行
+        container = QWidget(parent)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
-        mode_combo = QComboBox(parent)
+        def make_row(label_text, widget):
+            """创建一行 (标签 + 控件)，返回包裹的 QWidget 以便显示/隐藏。"""
+            row_widget = QWidget(container)
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            lbl = QLabel(label_text)
+            lbl.setMinimumWidth(80)
+            row.addWidget(lbl)
+            row.addWidget(widget, 1)
+            return row_widget
+
+        # ---- 模式选择（始终显示） ----
+        mode_combo = QComboBox(container)
         mode_combo.addItem("标准匹配", "standard")
         mode_combo.addItem("多角度匹配", "rotation")
         mode_combo.addItem("特征点匹配", "feature")
@@ -676,27 +762,9 @@ class TemplateMatch(VisionTool):
             mode_combo.setCurrentIndex(idx)
         mode_combo.currentIndexChanged.connect(
             lambda i: self.params.update({"mode": mode_combo.itemData(i)}))
-        widgets.append(("模式:", mode_combo))
+        layout.addWidget(make_row("模式:", mode_combo))
 
-        method_combo = QComboBox(parent)
-        method_combo.addItem("归一化相关系数", "TM_CCOEFF_NORMED")
-        method_combo.addItem("归一化相关", "TM_CCORR_NORMED")
-        method_combo.addItem("归一化平方差", "TM_SQDIFF_NORMED")
-        current_method = self.params.get("method", "TM_CCOEFF_NORMED")
-        idx = method_combo.findData(current_method)
-        if idx >= 0:
-            method_combo.setCurrentIndex(idx)
-        method_combo.currentIndexChanged.connect(
-            lambda i: self.params.update({"method": method_combo.itemData(i)}))
-        widgets.append(("方法:", method_combo))
-
-        thresh_spin = QDoubleSpinBox(parent)
-        thresh_spin.setRange(0, 1)
-        thresh_spin.setSingleStep(0.05)
-        thresh_spin.setValue(float(self.params.get("threshold", 0.8)))
-        thresh_spin.valueChanged.connect(lambda v: self.params.update({"threshold": v}))
-        widgets.append(("阈值:", thresh_spin))
-
+        # ---- 模板选择（所有模式都需要，始终显示） ----
         def choose_template():
             path, _ = QFileDialog.getOpenFileName(
                 parent, "选择模板图像", "",
@@ -707,15 +775,56 @@ class TemplateMatch(VisionTool):
                 if template_img is not None:
                     self._template_cache = template_img
 
-        btn = QPushButton("选择模板")
-        btn.clicked.connect(choose_template)
-        widgets.append(("模板:", btn))
+        template_btn = QPushButton("选择模板")
+        template_btn.clicked.connect(choose_template)
+        layout.addWidget(make_row("模板:", template_btn))
 
-        # 掩膜支持
-        use_mask_cb = QCheckBox(parent)
+        # ---- 标准匹配参数 ----
+        method_combo = QComboBox(container)
+        method_combo.addItem("归一化相关系数", "TM_CCOEFF_NORMED")
+        method_combo.addItem("归一化相关", "TM_CCORR_NORMED")
+        method_combo.addItem("归一化平方差", "TM_SQDIFF_NORMED")
+        current_method = self.params.get("method", "TM_CCOEFF_NORMED")
+        idx = method_combo.findData(current_method)
+        if idx >= 0:
+            method_combo.setCurrentIndex(idx)
+        method_combo.currentIndexChanged.connect(
+            lambda i: self.params.update({"method": method_combo.itemData(i)}))
+        row_method = make_row("方法:", method_combo)
+
+        thresh_spin = QDoubleSpinBox(container)
+        thresh_spin.setRange(0, 1)
+        thresh_spin.setSingleStep(0.05)
+        thresh_spin.setValue(float(self.params.get("threshold", 0.8)))
+        thresh_spin.valueChanged.connect(lambda v: self.params.update({"threshold": v}))
+        row_thresh = make_row("阈值:", thresh_spin)
+
+        # 多尺度缩放范围
+        scale_min_spin = QDoubleSpinBox(container)
+        scale_min_spin.setRange(0.1, 5.0)
+        scale_min_spin.setSingleStep(0.1)
+        scale_min_spin.setValue(float(self.params.get("scale_min", 0.5)))
+        scale_min_spin.valueChanged.connect(lambda v: self.params.update({"scale_min": v}))
+        row_scale_min = make_row("最小缩放:", scale_min_spin)
+
+        scale_max_spin = QDoubleSpinBox(container)
+        scale_max_spin.setRange(0.1, 5.0)
+        scale_max_spin.setSingleStep(0.1)
+        scale_max_spin.setValue(float(self.params.get("scale_max", 2.0)))
+        scale_max_spin.valueChanged.connect(lambda v: self.params.update({"scale_max": v}))
+        row_scale_max = make_row("最大缩放:", scale_max_spin)
+
+        scale_step_spin = QDoubleSpinBox(container)
+        scale_step_spin.setRange(0.05, 1.0)
+        scale_step_spin.setSingleStep(0.05)
+        scale_step_spin.setValue(float(self.params.get("scale_step", 0.1)))
+        scale_step_spin.valueChanged.connect(lambda v: self.params.update({"scale_step": v}))
+        row_scale_step = make_row("缩放步长:", scale_step_spin)
+
+        use_mask_cb = QCheckBox(container)
         use_mask_cb.setChecked(self.params.get("use_mask", False))
         use_mask_cb.stateChanged.connect(lambda v: self.params.update({"use_mask": bool(v)}))
-        widgets.append(("使用掩膜:", use_mask_cb))
+        row_mask_cb = make_row("使用掩膜:", use_mask_cb)
 
         def choose_mask():
             path, _ = QFileDialog.getOpenFileName(
@@ -729,28 +838,30 @@ class TemplateMatch(VisionTool):
 
         mask_btn = QPushButton("选择掩膜")
         mask_btn.clicked.connect(choose_mask)
-        widgets.append(("掩膜:", mask_btn))
+        row_mask_btn = make_row("掩膜:", mask_btn)
 
-        angle_start = QSpinBox(parent)
+        # ---- 多角度匹配参数 ----
+        angle_start = QSpinBox(container)
         angle_start.setRange(-180, 180)
         angle_start.setValue(int(self.params.get("angle_start", -30)))
         angle_start.valueChanged.connect(lambda v: self.params.update({"angle_start": v}))
-        widgets.append(("起始角度:", angle_start))
+        row_angle_start = make_row("起始角度:", angle_start)
 
-        angle_end = QSpinBox(parent)
+        angle_end = QSpinBox(container)
         angle_end.setRange(-180, 180)
         angle_end.setValue(int(self.params.get("angle_end", 30)))
         angle_end.valueChanged.connect(lambda v: self.params.update({"angle_end": v}))
-        widgets.append(("结束角度:", angle_end))
+        row_angle_end = make_row("结束角度:", angle_end)
 
-        angle_step = QDoubleSpinBox(parent)
+        angle_step = QDoubleSpinBox(container)
         angle_step.setRange(0.5, 30)
         angle_step.setSingleStep(0.5)
         angle_step.setValue(float(self.params.get("angle_step", 5)))
         angle_step.valueChanged.connect(lambda v: self.params.update({"angle_step": v}))
-        widgets.append(("步长:", angle_step))
+        row_angle_step = make_row("步长:", angle_step)
 
-        feat_combo = QComboBox(parent)
+        # ---- 特征点匹配参数 ----
+        feat_combo = QComboBox(container)
         feat_combo.addItem("SIFT", "sift")
         feat_combo.addItem("ORB", "orb")
         current_feat = self.params.get("feature_mode", "sift")
@@ -759,15 +870,46 @@ class TemplateMatch(VisionTool):
             feat_combo.setCurrentIndex(idx)
         feat_combo.currentIndexChanged.connect(
             lambda i: self.params.update({"feature_mode": feat_combo.itemData(i)}))
-        widgets.append(("特征模式:", feat_combo))
+        row_feat = make_row("特征模式:", feat_combo)
 
-        min_match = QSpinBox(parent)
+        min_match = QSpinBox(container)
         min_match.setRange(1, 1000)
         min_match.setValue(int(self.params.get("min_matches", 10)))
         min_match.valueChanged.connect(lambda v: self.params.update({"min_matches": v}))
-        widgets.append(("最小匹配数:", min_match))
+        row_min_match = make_row("最小匹配数:", min_match)
 
-        return widgets
+        # 按模式组织参数行
+        mode_rows = {
+            "standard": [row_method, row_thresh, row_scale_min, row_scale_max,
+                         row_scale_step, row_mask_cb, row_mask_btn],
+            "rotation": [row_thresh, row_angle_start, row_angle_end, row_angle_step],
+            "feature": [row_feat, row_min_match],
+        }
+
+        # 将各参数行加入布局
+        for rows in mode_rows.values():
+            for rw in rows:
+                layout.addWidget(rw)
+
+        # 连接预览信号（parent 为 ParamConfigDialog）
+        if hasattr(parent, "_connect_auto_preview"):
+            for w in [mode_combo, method_combo, thresh_spin, scale_min_spin,
+                      scale_max_spin, scale_step_spin, use_mask_cb,
+                      angle_start, angle_end, angle_step, feat_combo, min_match]:
+                parent._connect_auto_preview(w)
+
+        def _update_visibility():
+            mode = mode_combo.itemData(mode_combo.currentIndex())
+            for key, rows in mode_rows.items():
+                visible = (key == mode)
+                for rw in rows:
+                    rw.setVisible(visible)
+
+        mode_combo.currentIndexChanged.connect(lambda i: _update_visibility())
+        _update_visibility()
+
+        # 返回容器（渲染逻辑会将 QWidget 作为单独一行加入）
+        return [(container, None)]
 
 
 class EdgeMatch(VisionTool):
@@ -1119,5 +1261,184 @@ class FastMatch(VisionTool):
         thresh_spin.setValue(float(self.params.get("threshold", 0.7)))
         thresh_spin.valueChanged.connect(lambda v: self.params.update({"threshold": v}))
         widgets.append(("阈值:", thresh_spin))
+
+
+class QRCodeRecognize(VisionTool):
+    """二维码（QR Code）识别算子。
+
+    使用 OpenCV 的 QRCodeDetector 识别图像中的二维码，将识别结果
+    （如板卡 SN）写入 ToolResult.data["qr_data"]，供保存逻辑作为 ID 使用。
+
+    参数:
+        - require_pass: 是否将"识别到二维码"作为通过条件（默认 True）
+        - expected_prefix: 可选，期望的 SN 前缀（用于校验，可为空）
+    """
+    display_name = "二维码识别"
+
+    def __init__(self, params=None):
+        super().__init__(params)
+        self.params.setdefault("require_pass", True)
+        self.params.setdefault("expected_prefix", "")
+
+    def process(self, context: PipelineContext) -> ToolResult:
+        img = self._get_input_image(context)
+        if img is None:
+            return ToolResult(success=False, passed=False, message="无输入图像")
+
+        # 转灰度（QRCodeDetector 需要灰度图）
+        if len(img.shape) == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img.copy()
+
+        # 多策略识别：依次尝试多种预处理，提高识别率
+        qr_data, points = self._try_decode(gray)
+
+        expected_prefix = self.params.get("expected_prefix", "").strip()
+
+        # 校验前缀（可选）
+        prefix_ok = True
+        if expected_prefix and not qr_data.startswith(expected_prefix):
+            prefix_ok = False
+
+        # 判定：识别到且（无前缀要求或前缀匹配）
+        recognized = bool(qr_data) and prefix_ok
+        require_pass = self.params.get("require_pass", True)
+        passed = recognized if require_pass else True
+
+        # 绘制 overlay 标注（框出二维码）
+        # 注意：若使用 ROI 输入源，img 是 ROI 局部图像，需将标注偏移到完整帧坐标
+        input_source = self.params.get("_input_source") or self.params.get("input_source", "current")
+        if input_source.startswith("region:") and self._full_frame_image is not None:
+            overlay = np.zeros_like(self._full_frame_image)
+            region_name = input_source[7:]
+            rx, ry = 0, 0
+            if region_name in context.regions:
+                rx, ry, _, _ = context.regions[region_name]
+        else:
+            overlay = np.zeros_like(img)
+            rx, ry = 0, 0
+
+        if points is not None and len(points) > 0:
+            pts = points.reshape(-1, 2).astype(np.int32)
+            # 偏移到完整帧坐标（ROI 模式）
+            pts[:, 0] += rx
+            pts[:, 1] += ry
+            # 使用轴对齐矩形框（不歪、位置准确），线宽 2
+            x, y, w, h = cv2.boundingRect(pts)
+            cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            # 在二维码上方标注识别内容
+            label = qr_data if qr_data else "未识别"
+            cv2.putText(overlay, label, (x, max(0, y - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        result_data = {
+            "qr_data": qr_data,
+            "recognized": recognized,
+        }
+
+        if recognized:
+            message = f"二维码识别成功: {qr_data}"
+        elif qr_data:
+            message = f"二维码前缀校验失败: {qr_data}"
+        else:
+            message = "未识别到二维码"
+
+        return ToolResult(
+            success=True,
+            passed=passed,
+            processed_image=img,
+            overlay_image=overlay,
+            data=result_data,
+            message=message
+        )
+
+    def _try_decode(self, gray: np.ndarray):
+        """多策略尝试解码二维码，返回 (data, points)。
+
+        依次尝试：
+            1. 原始灰度图（detectAndDecode）
+            2. 自适应阈值二值化
+            3. 放大 2 倍（小二维码）
+            4. CLAHE 对比度增强
+            5. 多码检测 detectAndDecodeMulti
+        """
+        detector = cv2.QRCodeDetector()
+
+        # 策略 1：原始灰度图
+        try:
+            data, points, _ = detector.detectAndDecode(gray)
+            if data:
+                return data, points
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 策略 2：自适应阈值二值化（增强对比度）
+        try:
+            binary = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 51, 10)
+            data, points, _ = detector.detectAndDecode(binary)
+            if data:
+                return data, points
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 策略 3：放大 2 倍（小二维码）
+        try:
+            h, w = gray.shape[:2]
+            if max(h, w) < 800:
+                up = cv2.resize(gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+                data, points, _ = detector.detectAndDecode(up)
+                if data:
+                    # 坐标缩放回原图
+                    if points is not None and len(points) > 0:
+                        points = points / 2.0
+                    return data, points
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 策略 4：CLAHE 对比度增强
+        try:
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray)
+            data, points, _ = detector.detectAndDecode(enhanced)
+            if data:
+                return data, points
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 策略 5：多码检测（更鲁棒）
+        try:
+            ok, decoded, points_arr, _ = detector.detectAndDecodeMulti(gray)
+            if ok and decoded:
+                for i, d in enumerate(decoded):
+                    if d:
+                        pts = points_arr[i] if points_arr is not None else None
+                        return d, pts
+        except Exception:  # noqa: BLE001
+            pass
+
+        return "", None
+
+    def get_param_widgets(self, parent):
+        from PyQt5.QtWidgets import (QCheckBox, QLineEdit, QHBoxLayout,
+                                      QWidget, QLabel)
+
+        widgets = []
+
+        require_cb = QCheckBox("识别到二维码才判定通过")
+        require_cb.setChecked(bool(self.params.get("require_pass", True)))
+        require_cb.stateChanged.connect(
+            lambda s: self.params.update({"require_pass": bool(s)}))
+        widgets.append(("", require_cb))
+
+        prefix_edit = QLineEdit(self.params.get("expected_prefix", ""))
+        prefix_edit.setPlaceholderText("可选，SN 前缀校验")
+        prefix_edit.textChanged.connect(
+            lambda t: self.params.update({"expected_prefix": t}))
+        widgets.append(("SN前缀:", prefix_edit))
+
+        return widgets
 
 

@@ -28,11 +28,14 @@ from .widgets.camera_panel import CameraPanel
 from core.paths import SCHEME_DIR
 from .widgets.pipeline_editor import PipelineEditor
 from .widgets.result_panel import ResultPanel
+from .widgets.smc_dialog import SMCAxisControlPanel
 
 from core.serial_comm import SerialCommManager
 from core.serial_test_workflow import SerialTestWorkflow, WorkflowConfig
 from core.inspection_workflow import InspectionWorkflow
 from core.product_manager import list_products, load_product, save_product, create_default_config
+from core.controller import Controller, ControllerError
+from .widgets.smc_dialog import DEFAULT_SMC_IP
 
 import hashlib
 from core.paths import USERS_FILE
@@ -220,10 +223,14 @@ class MainWindow(QMainWindow):
         # 自动化检测面板（在 _build_automation_page 中创建）
         self._inspection_panel = None
 
+        # SMC6480 运动控制卡
+        self._smc_controller: Optional[Controller] = None
+
         self._setup_ui()
         self._load_schemes()
         self._auto_load_default_scheme()
         self._init_sdk()
+        self._init_smc()
 
         # 启动后延迟自动连接相机（等待 UI 完全渲染）
         QTimer.singleShot(500, self._auto_connect_camera)
@@ -588,6 +595,10 @@ class MainWindow(QMainWindow):
         # 传入串口通信管理器（用于扫描头）
         if self._serial_comm is not None:
             self._inspection_workflow.set_serial_comm(self._serial_comm)
+        # 传入轴控制器（若已初始化；_smc_controller 在 __init__ 中稍后定义）
+        smc = getattr(self, '_smc_controller', None)
+        if smc is not None:
+            self._inspection_workflow.set_controller(smc)
 
     def _build_engineer_page(self):
         page = QWidget()
@@ -789,6 +800,11 @@ class MainWindow(QMainWindow):
 
         # ── 标签页2: 产品配置 ──
         self._build_product_config_tab()
+
+        # ── 标签页3: 轴控制（SMC6480）──
+        self._smc_panel = SMCAxisControlPanel()
+        self._smc_panel.connection_changed.connect(self._on_smc_connection_changed)
+        self.eng_right_tabs.addTab(self._smc_panel, "🎮 轴控制")
 
         right_eng_layout.addWidget(self.eng_log)
         right_eng_layout.addWidget(self.eng_right_tabs, 1)
@@ -1260,6 +1276,47 @@ class MainWindow(QMainWindow):
             CameraManager.initialize_sdk()
         except Exception as e:
             log_error(f"SDK初始化失败: {e}")
+
+    def _init_smc(self):
+        """初始化 SMC6480 运动控制卡并自动连接（IP 写死为默认值）。"""
+        try:
+            self._smc_controller = Controller()
+        except ControllerError as e:
+            log_error(f"SMC6480 DLL 加载失败: {e}")
+            self._smc_controller = None
+            # 将控制器传给轴控制面板（未连接状态）
+            if hasattr(self, '_smc_panel') and self._smc_panel is not None:
+                self._smc_panel.set_controller(None)
+            return
+
+        # 将控制器传给轴控制面板（共享实例）
+        if hasattr(self, '_smc_panel') and self._smc_panel is not None:
+            self._smc_panel.set_controller(self._smc_controller)
+
+        # 将控制器注入自动化工作流（启用轴运动）
+        if hasattr(self, '_inspection_workflow') and self._inspection_workflow is not None:
+            self._inspection_workflow.set_controller(self._smc_controller)
+
+        # 自动连接（IP 写死）
+        try:
+            self._smc_controller.connect_eth(DEFAULT_SMC_IP)
+            log_info(f"SMC6480 自动连接成功: {DEFAULT_SMC_IP}")
+        except ControllerError as e:
+            log_warning(f"SMC6480 自动连接失败: {e}（可通过轴控制面板手动重连）")
+
+    def _on_smc_connection_changed(self, connected: bool):
+        """轴控制面板连接状态变化回调 - 同步主窗口的控制器引用。"""
+        if connected:
+            # 面板手动重连成功，同步共享控制器实例
+            if hasattr(self, '_smc_panel') and self._smc_panel is not None:
+                self._smc_controller = self._smc_panel.controller
+            log_info("SMC6480 已通过轴控制面板手动重连")
+        else:
+            log_info("SMC6480 已断开")
+
+        # 同步控制器到自动化工作流（启用/禁用轴运动）
+        if hasattr(self, '_inspection_workflow') and self._inspection_workflow is not None:
+            self._inspection_workflow.set_controller(self._smc_controller)
 
     def _auto_connect_camera(self):
         """启动时自动搜索并连接相机"""
@@ -2238,19 +2295,19 @@ class ProductConfigDialog(QDialog):
         self._config = None
 
         self.setWindowTitle("新建产品配置" if mode == "new" else f"编辑产品 - {product_name}")
-        self.setMinimumSize(640, 640)
-        self.resize(780, 720)
+        self.setMinimumSize(760, 640)
+        self.resize(920, 820)
         self.setStyleSheet("""
             QDialog { background-color: #2d2d2d; }
-            QLabel { color: #d4d4d4; font-size: 15px; }
+            QLabel { color: #d4d4d4; font-size: 14px; }
             QLineEdit, QSpinBox, QDoubleSpinBox {
                 background-color: #3c3c3c; color: #d4d4d4;
                 border: 1px solid #555; border-radius: 3px;
-                padding: 4px 8px;
+                padding: 5px 8px; min-height: 22px;
             }
             QGroupBox {
-                font-weight: bold; font-size: 16px; border: 1px solid #444;
-                border-radius: 4px; margin-top: 8px; padding-top: 14px; color: #d4d4d4;
+                font-weight: bold; font-size: 14px; border: 1px solid #444;
+                border-radius: 4px; margin-top: 10px; padding-top: 16px; color: #d4d4d4;
             }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
             QTableWidget {
@@ -2262,6 +2319,10 @@ class ProductConfigDialog(QDialog):
                 background-color: #3c3c3c; color: #d4d4d4;
                 border: 1px solid #444; padding: 4px;
             }
+            QScrollArea { border: none; background: transparent; }
+            QScrollBar:vertical { width: 8px; background: #2d2d2d; }
+            QScrollBar::handle:vertical { background: #555; border-radius: 4px; min-height: 20px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         """)
 
         if mode == "edit" and product_name:
@@ -2271,14 +2332,27 @@ class ProductConfigDialog(QDialog):
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(8)
-        layout.setContentsMargins(16, 12, 16, 12)
+        # 外层布局：滚动区域 + 底部按钮
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # 滚动区域包裹所有分组，避免内容挤压
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 16, 20, 16)
 
         # ── 基本信息 ──
         basic_group = QGroupBox("基本信息")
         basic_layout = QFormLayout(basic_group)
-        basic_layout.setSpacing(6)
+        basic_layout.setSpacing(8)
+        basic_layout.setContentsMargins(12, 18, 12, 12)
 
         self._edit_name = QLineEdit(self._config.get("name", "") if self._config else "")
         self._edit_name.setPlaceholderText("输入产品型号名称")
@@ -2293,7 +2367,8 @@ class ProductConfigDialog(QDialog):
         # ── 相机参数 ──
         camera_group = QGroupBox("相机参数")
         camera_layout = QFormLayout(camera_group)
-        camera_layout.setSpacing(6)
+        camera_layout.setSpacing(8)
+        camera_layout.setContentsMargins(12, 18, 12, 12)
 
         camera = self._config.get("camera", {}) if self._config else {}
 
@@ -2311,35 +2386,149 @@ class ProductConfigDialog(QDialog):
 
         layout.addWidget(camera_group)
 
-        # ── 运动参数 ──
-        motion_group = QGroupBox("运动参数")
-        motion_layout = QFormLayout(motion_group)
-        motion_layout.setSpacing(6)
+        # ── 网格配置（行列）──
+        grid_group = QGroupBox("托盘网格配置")
+        grid_layout = QFormLayout(grid_group)
+        grid_layout.setSpacing(8)
+        grid_layout.setContentsMargins(12, 18, 12, 12)
+
+        grid = self._config.get("grid", {}) if self._config else {}
+        self._edit_rows = QSpinBox()
+        self._edit_rows.setRange(1, 20)
+        self._edit_rows.setValue(grid.get("rows", 1))
+        grid_layout.addRow("行数:", self._edit_rows)
+
+        self._edit_cols = QSpinBox()
+        self._edit_cols.setRange(1, 20)
+        self._edit_cols.setValue(grid.get("cols", 1))
+        grid_layout.addRow("列数:", self._edit_cols)
+
+        layout.addWidget(grid_group)
+
+        # ── 运动参数（X、Y 双轴，两列并排）──
+        motion_group = QGroupBox("运动参数（X/Y 双轴）")
+        motion_outer = QHBoxLayout(motion_group)
+        motion_outer.setContentsMargins(12, 18, 12, 12)
+        motion_outer.setSpacing(16)
 
         motion = self._config.get("motion", {}) if self._config else {}
+        x_cfg = motion.get("x", {}) if motion else {}
+        y_cfg = motion.get("y", {}) if motion else {}
 
-        self._edit_vmax = QDoubleSpinBox()
-        self._edit_vmax.setRange(1, 500000)
-        self._edit_vmax.setValue(motion.get("v_max", 50000))
-        motion_layout.addRow("最大速度:", self._edit_vmax)
+        # X 轴列
+        x_col = QVBoxLayout()
+        x_col.setSpacing(8)
+        x_title = QLabel("X 轴")
+        x_title.setStyleSheet("font-weight: bold; color: #4fc3f7; font-size: 14px;")
+        x_col.addWidget(x_title)
 
-        self._edit_origin = QSpinBox()
-        self._edit_origin.setRange(-1000000, 1000000)
-        self._edit_origin.setValue(motion.get("origin_position", 0))
-        motion_layout.addRow("原点位置:", self._edit_origin)
+        self._edit_x_axis = QSpinBox()
+        self._edit_x_axis.setRange(0, 3)
+        self._edit_x_axis.setValue(motion.get("x_axis", 0))
+        x_col.addWidget(self._make_field("轴号", self._edit_x_axis))
 
+        self._edit_x_vmax = QDoubleSpinBox()
+        self._edit_x_vmax.setRange(1, 500000)
+        self._edit_x_vmax.setValue(x_cfg.get("v_max", 50000))
+        x_col.addWidget(self._make_field("最大速度", self._edit_x_vmax))
+
+        self._edit_x_amax = QDoubleSpinBox()
+        self._edit_x_amax.setRange(1, 1000000)
+        self._edit_x_amax.setValue(x_cfg.get("a_max", 100000))
+        x_col.addWidget(self._make_field("加速度", self._edit_x_amax))
+
+        # Y 轴列
+        y_col = QVBoxLayout()
+        y_col.setSpacing(8)
+        y_title = QLabel("Y 轴")
+        y_title.setStyleSheet("font-weight: bold; color: #66BB6A; font-size: 14px;")
+        y_col.addWidget(y_title)
+
+        self._edit_y_axis = QSpinBox()
+        self._edit_y_axis.setRange(0, 3)
+        self._edit_y_axis.setValue(motion.get("y_axis", 1))
+        y_col.addWidget(self._make_field("轴号", self._edit_y_axis))
+
+        self._edit_y_vmax = QDoubleSpinBox()
+        self._edit_y_vmax.setRange(1, 500000)
+        self._edit_y_vmax.setValue(y_cfg.get("v_max", 50000))
+        y_col.addWidget(self._make_field("最大速度", self._edit_y_vmax))
+
+        self._edit_y_amax = QDoubleSpinBox()
+        self._edit_y_amax.setRange(1, 1000000)
+        self._edit_y_amax.setValue(y_cfg.get("a_max", 100000))
+        y_col.addWidget(self._make_field("加速度", self._edit_y_amax))
+
+        motion_outer.addLayout(x_col)
+        motion_outer.addLayout(y_col)
+
+        # 运动超时（公共）
+        timeout_row = QHBoxLayout()
+        timeout_row.addWidget(QLabel("运动超时:"))
         self._edit_timeout = QSpinBox()
         self._edit_timeout.setRange(1, 120)
-        self._edit_timeout.setValue(motion.get("move_timeout_s", 10))
+        self._edit_timeout.setValue(x_cfg.get("move_timeout_s", 10))
         self._edit_timeout.setSuffix(" 秒")
-        motion_layout.addRow("运动超时:", self._edit_timeout)
+        self._edit_timeout.setMinimumWidth(120)
+        timeout_row.addWidget(self._edit_timeout)
+        timeout_row.addStretch()
+        motion_outer.addLayout(timeout_row)
 
         layout.addWidget(motion_group)
+
+        # ── 起始位 / 结束位（两列并排）──
+        home_group = QGroupBox("起始位 / 结束位")
+        home_outer = QHBoxLayout(home_group)
+        home_outer.setContentsMargins(12, 18, 12, 12)
+        home_outer.setSpacing(16)
+
+        home = self._config.get("home", {}) if self._config else {}
+
+        # 起始位列
+        start_col = QVBoxLayout()
+        start_col.setSpacing(8)
+        start_title = QLabel("起始位")
+        start_title.setStyleSheet("font-weight: bold; color: #4fc3f7; font-size: 14px;")
+        start_col.addWidget(start_title)
+
+        self._edit_start_x = QSpinBox()
+        self._edit_start_x.setRange(-1000000, 1000000)
+        self._edit_start_x.setValue(home.get("start_x", 0))
+        start_col.addWidget(self._make_field("X 坐标", self._edit_start_x))
+
+        self._edit_start_y = QSpinBox()
+        self._edit_start_y.setRange(-1000000, 1000000)
+        self._edit_start_y.setValue(home.get("start_y", 0))
+        start_col.addWidget(self._make_field("Y 坐标", self._edit_start_y))
+
+        # 结束位列
+        end_col = QVBoxLayout()
+        end_col.setSpacing(8)
+        end_title = QLabel("结束位")
+        end_title.setStyleSheet("font-weight: bold; color: #66BB6A; font-size: 14px;")
+        end_col.addWidget(end_title)
+
+        self._edit_end_x = QSpinBox()
+        self._edit_end_x.setRange(-1000000, 1000000)
+        self._edit_end_x.setValue(home.get("end_x", 0))
+        end_col.addWidget(self._make_field("X 坐标", self._edit_end_x))
+
+        self._edit_end_y = QSpinBox()
+        self._edit_end_y.setRange(-1000000, 1000000)
+        self._edit_end_y.setValue(home.get("end_y", 0))
+        end_col.addWidget(self._make_field("Y 坐标", self._edit_end_y))
+
+        home_outer.addLayout(start_col)
+        home_outer.addLayout(end_col)
+        home_outer.addStretch()
+
+        layout.addWidget(home_group)
 
         # ── DI 配置 ──
         di_group = QGroupBox("触发配置")
         di_layout = QFormLayout(di_group)
-        di_layout.setSpacing(6)
+        di_layout.setSpacing(8)
+        di_layout.setContentsMargins(12, 18, 12, 12)
 
         di_bit = self._config.get("di_bit", 3) if self._config else 3
         self._edit_di_bit = QSpinBox()
@@ -2352,13 +2541,14 @@ class ProductConfigDialog(QDialog):
         # ── 扫码配置 ──
         scan_group = QGroupBox("一维码扫码配置")
         scan_layout = QFormLayout(scan_group)
-        scan_layout.setSpacing(6)
+        scan_layout.setSpacing(8)
+        scan_layout.setContentsMargins(12, 18, 12, 12)
 
         barcode_cfg = self._config.get("barcode_scan", {}) if self._config else {}
 
         self._scan_enabled_cb = QCheckBox("启用扫码")
         self._scan_enabled_cb.setChecked(barcode_cfg.get("enabled", False))
-        self._scan_enabled_cb.setStyleSheet("color: #d4d4d4; font-size: 15px; spacing: 8px;")
+        self._scan_enabled_cb.setStyleSheet("color: #d4d4d4; font-size: 14px; spacing: 8px;")
         scan_layout.addRow("", self._scan_enabled_cb)
 
         self._scan_position = QSpinBox()
@@ -2378,19 +2568,38 @@ class ProductConfigDialog(QDialog):
 
         layout.addWidget(scan_group)
 
-        # ── 位置列表 ──
-        pos_group = QGroupBox("检测位置")
+        # ── 位置列表（图块化轴配置）──
+        pos_group = QGroupBox("检测位置（图块化轴配置）")
         pos_layout = QVBoxLayout(pos_group)
-        pos_layout.setSpacing(4)
+        pos_layout.setSpacing(6)
+        pos_layout.setContentsMargins(12, 18, 12, 12)
+
+        # 图块化轴配置按钮
+        grid_btn_layout = QHBoxLayout()
+        self._btn_grid_config = QPushButton("🗂 图块化轴配置")
+        self._btn_grid_config.setStyleSheet("""
+            QPushButton {
+                background-color: #1565C0; color: #fff;
+                padding: 6px 16px; border: 1px solid #42A5F5;
+                border-radius: 3px; font-weight: bold; font-size: 14px;
+            }
+            QPushButton:hover { background-color: #1976D2; }
+        """)
+        self._btn_grid_config.setToolTip("按当前行列数弹出轴配置窗口，填写各点位 X/Y 坐标")
+        grid_btn_layout.addWidget(self._btn_grid_config)
+        grid_btn_layout.addStretch()
+        pos_layout.addLayout(grid_btn_layout)
 
         self._pos_table = QTableWidget()
-        self._pos_table.setColumnCount(4)
-        self._pos_table.setHorizontalHeaderLabels(["位置名称", "坐标", "视觉方案", ""])
+        self._pos_table.setColumnCount(5)
+        self._pos_table.setHorizontalHeaderLabels(["位置名称", "X 坐标", "Y 坐标", "视觉方案", ""])
         self._pos_table.horizontalHeader().setStretchLastSection(False)
         self._pos_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self._pos_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self._pos_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self._pos_table.setMinimumHeight(150)
+        self._pos_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self._pos_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self._pos_table.setMinimumHeight(160)
+        self._pos_table.setMaximumHeight(260)
 
         pos_layout.addWidget(self._pos_table, 1)
 
@@ -2411,18 +2620,22 @@ class ProductConfigDialog(QDialog):
         pos_btn_layout.addStretch()
         pos_layout.addLayout(pos_btn_layout)
 
-        layout.addWidget(pos_group, 1)
+        layout.addWidget(pos_group)
 
-        # ── 按钮 ──
+        scroll.setWidget(content)
+        outer_layout.addWidget(scroll, 1)
+
+        # ── 底部按钮 ──
         btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(20, 10, 20, 12)
         btn_layout.addStretch()
 
         self._btn_ok = QPushButton("确定")
         self._btn_ok.setStyleSheet("""
             QPushButton {
                 background-color: #2E7D32; color: #fff;
-                padding: 6px 24px; border: 1px solid #4CAF50;
-                border-radius: 3px; font-weight: bold; font-size: 16px;
+                padding: 8px 28px; border: 1px solid #4CAF50;
+                border-radius: 3px; font-weight: bold; font-size: 15px;
             }
             QPushButton:hover { background-color: #388E3C; }
         """)
@@ -2431,21 +2644,22 @@ class ProductConfigDialog(QDialog):
         self._btn_cancel.setStyleSheet("""
             QPushButton {
                 background-color: #3c3c3c; color: #d4d4d4;
-                padding: 6px 24px; border: 1px solid #555;
-                border-radius: 3px; font-size: 16px;
+                padding: 8px 28px; border: 1px solid #555;
+                border-radius: 3px; font-size: 15px;
             }
             QPushButton:hover { background-color: #4a4a4a; }
         """)
 
         btn_layout.addWidget(self._btn_ok)
         btn_layout.addWidget(self._btn_cancel)
-        layout.addLayout(btn_layout)
+        outer_layout.addLayout(btn_layout)
 
         # 连接信号
         self._btn_ok.clicked.connect(self._on_ok)
         self._btn_cancel.clicked.connect(self.reject)
         self._btn_add_pos.clicked.connect(self._add_position_row)
         self._btn_remove_pos.clicked.connect(self._remove_selected_row)
+        self._btn_grid_config.clicked.connect(self._open_grid_config)
 
         # 加载已有位置数据
         if self._config:
@@ -2453,11 +2667,25 @@ class ProductConfigDialog(QDialog):
             for pos in positions:
                 self._add_position_row(
                     name=pos.get("name", ""),
-                    position=pos.get("position", 0),
+                    x=pos.get("x", 0),
+                    y=pos.get("y", 0),
                     scheme=pos.get("scheme", "")
                 )
 
-    def _add_position_row(self, name="", position=0, scheme=""):
+    def _make_field(self, label: str, widget) -> QWidget:
+        """创建一个带标签的字段行（用于两列布局）。"""
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        lbl = QLabel(label)
+        lbl.setStyleSheet("color: #d4d4d4; font-size: 13px;")
+        lbl.setMinimumWidth(70)
+        row_layout.addWidget(lbl)
+        row_layout.addWidget(widget, 1)
+        return row
+
+    def _add_position_row(self, name="", x=0, y=0, scheme=""):
         """添加一行位置配置"""
         row = self._pos_table.rowCount()
         self._pos_table.insertRow(row)
@@ -2466,9 +2694,13 @@ class ProductConfigDialog(QDialog):
         name_item = QTableWidgetItem(str(name))
         self._pos_table.setItem(row, 0, name_item)
 
-        # 坐标
-        pos_item = QTableWidgetItem(str(position))
-        self._pos_table.setItem(row, 1, pos_item)
+        # X 坐标
+        x_item = QTableWidgetItem(str(x))
+        self._pos_table.setItem(row, 1, x_item)
+
+        # Y 坐标
+        y_item = QTableWidgetItem(str(y))
+        self._pos_table.setItem(row, 2, y_item)
 
         # 方案选择（下拉框）
         combo = QComboBox()
@@ -2493,16 +2725,109 @@ class ProductConfigDialog(QDialog):
                     combo.addItem(sname)
         if scheme:
             combo.setCurrentText(scheme)
-        self._pos_table.setCellWidget(row, 2, combo)
+        self._pos_table.setCellWidget(row, 3, combo)
 
         # 删除按钮（占位列）
-        self._pos_table.setItem(row, 3, QTableWidgetItem(""))
+        self._pos_table.setItem(row, 4, QTableWidgetItem(""))
 
     def _remove_selected_row(self):
         """删除选中的行"""
         row = self._pos_table.currentRow()
         if row >= 0:
             self._pos_table.removeRow(row)
+
+    def _open_grid_config(self):
+        """打开图块化轴配置窗口，按当前行列数填写各点位 X/Y 坐标。"""
+        rows = self._edit_rows.value()
+        cols = self._edit_cols.value()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"图块化轴配置（{rows} 行 × {cols} 列）")
+        dialog.setMinimumSize(520, 400)
+        dialog.resize(600, 480)
+        dialog.setStyleSheet("""
+            QDialog { background-color: #2d2d2d; }
+            QLabel { color: #d4d4d4; font-size: 14px; }
+            QTableWidget {
+                background-color: #1e1e1e; color: #d4d4d4;
+                border: 1px solid #444; gridline-color: #333;
+            }
+            QTableWidget::item { padding: 4px; }
+            QHeaderView::section {
+                background-color: #3c3c3c; color: #d4d4d4;
+                border: 1px solid #444; padding: 4px;
+            }
+            QPushButton {
+                background-color: #3c3c3c; color: #d4d4d4;
+                padding: 6px 20px; border: 1px solid #555;
+                border-radius: 3px; font-size: 14px;
+            }
+            QPushButton:hover { background-color: #4a4a4a; }
+        """)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(8)
+        layout.setContentsMargins(12, 10, 12, 10)
+
+        info = QLabel(f"请填写 {rows * cols} 个点位的 X、Y 轴坐标（行优先顺序）")
+        info.setStyleSheet("font-size: 14px; color: #4fc3f7; font-weight: bold;")
+        layout.addWidget(info)
+
+        table = QTableWidget(rows * cols, 3)
+        table.setHorizontalHeaderLabels(["点位", "X 坐标", "Y 坐标"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        table.verticalHeader().setVisible(False)
+
+        # 预填已有坐标（若表格中已有数据）
+        existing = {}
+        for r in range(self._pos_table.rowCount()):
+            n_item = self._pos_table.item(r, 0)
+            x_item = self._pos_table.item(r, 1)
+            y_item = self._pos_table.item(r, 2)
+            if n_item:
+                existing[n_item.text().strip()] = (
+                    int(x_item.text().strip()) if x_item and x_item.text().strip() else 0,
+                    int(y_item.text().strip()) if y_item and y_item.text().strip() else 0,
+                )
+
+        idx = 0
+        for r in range(1, rows + 1):
+            for c in range(1, cols + 1):
+                name = f"{r}.{c}"
+                table.setItem(idx, 0, QTableWidgetItem(name))
+                x_val, y_val = existing.get(name, ((c - 1) * 1000, (r - 1) * 1000))
+                table.setItem(idx, 1, QTableWidgetItem(str(x_val)))
+                table.setItem(idx, 2, QTableWidgetItem(str(y_val)))
+                idx += 1
+
+        layout.addWidget(table, 1)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_ok = QPushButton("确定")
+        btn_cancel = QPushButton("取消")
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+        def on_ok():
+            # 将图块化配置写回主表格
+            self._pos_table.setRowCount(0)
+            for i in range(rows * cols):
+                name = table.item(i, 0).text().strip()
+                x_item = table.item(i, 1)
+                y_item = table.item(i, 2)
+                x_val = int(x_item.text().strip()) if x_item and x_item.text().strip() else 0
+                y_val = int(y_item.text().strip()) if y_item and y_item.text().strip() else 0
+                self._add_position_row(name=name, x=x_val, y=y_val)
+            dialog.accept()
+
+        btn_ok.clicked.connect(on_ok)
+        btn_cancel.clicked.connect(dialog.reject)
+
+        dialog.exec_()
 
     def _on_ok(self):
         """确定按钮"""
@@ -2511,25 +2836,42 @@ class ProductConfigDialog(QDialog):
             QMessageBox.warning(self, "提示", "请输入产品名称")
             return
 
-        # 收集位置数据
+        rows = self._edit_rows.value()
+        cols = self._edit_cols.value()
+
+        # 收集位置数据（二维网格，行优先）
         positions = []
         for row in range(self._pos_table.rowCount()):
             name_item = self._pos_table.item(row, 0)
-            pos_item = self._pos_table.item(row, 1)
-            combo = self._pos_table.cellWidget(row, 2)
+            x_item = self._pos_table.item(row, 1)
+            y_item = self._pos_table.item(row, 2)
+            combo = self._pos_table.cellWidget(row, 3)
 
             pos_name = name_item.text().strip() if name_item else ""
-            pos_value = int(pos_item.text().strip()) if pos_item and pos_item.text().strip() else 0
+            x_val = int(x_item.text().strip()) if x_item and x_item.text().strip() else 0
+            y_val = int(y_item.text().strip()) if y_item and y_item.text().strip() else 0
             scheme_name = combo.currentText().strip() if combo else ""
 
             if pos_name:  # 只保存有名称的位置
+                # 从名称解析行列（如 "1.2" → row=1, col=2）
+                r, c = 1, row + 1
+                if "." in pos_name:
+                    parts = pos_name.split(".")
+                    try:
+                        r = int(parts[0])
+                        c = int(parts[1])
+                    except (ValueError, IndexError):
+                        r, c = 1, row + 1
                 positions.append({
+                    "row": r,
+                    "col": c,
                     "name": pos_name,
-                    "position": pos_value,
+                    "x": x_val,
+                    "y": y_val,
                     "scheme": scheme_name
                 })
 
-        # 构建配置
+        # 构建配置（新结构）
         config = {
             "name": name,
             "description": self._edit_desc.text().strip(),
@@ -2543,12 +2885,31 @@ class ProductConfigDialog(QDialog):
                 "exposure_time": int(self._edit_exposure.value()),
                 "gain": self._edit_gain.value()
             },
+            "grid": {
+                "rows": rows,
+                "cols": cols
+            },
             "motion": {
-                "axis": 1,
-                "v_max": int(self._edit_vmax.value()),
-                "a_max": 100000,
-                "origin_position": self._edit_origin.value(),
-                "move_timeout_s": self._edit_timeout.value()
+                "x_axis": self._edit_x_axis.value(),
+                "y_axis": self._edit_y_axis.value(),
+                "x": {
+                    "v_max": int(self._edit_x_vmax.value()),
+                    "a_max": int(self._edit_x_amax.value()),
+                    "origin_position": 0,
+                    "move_timeout_s": self._edit_timeout.value()
+                },
+                "y": {
+                    "v_max": int(self._edit_y_vmax.value()),
+                    "a_max": int(self._edit_y_amax.value()),
+                    "origin_position": 0,
+                    "move_timeout_s": self._edit_timeout.value()
+                }
+            },
+            "home": {
+                "start_x": self._edit_start_x.value(),
+                "start_y": self._edit_start_y.value(),
+                "end_x": self._edit_end_x.value(),
+                "end_y": self._edit_end_y.value()
             },
             "di_bit": self._edit_di_bit.value(),
             "poll_interval_ms": 50,
