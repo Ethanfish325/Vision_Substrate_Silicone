@@ -50,17 +50,19 @@ Vision_Substrate_Silicone/
 │   ├── paths.py                     # 路径管理（数据目录、方案目录等）
 │   ├── config_manager.py            # 配置管理（单例模式）
 │   ├── log_manager.py               # 日志管理（按天轮转、自动清理）
-│   ├── result_storage.py            # 结果存储（CSV/JSON/图像）
+│   ├── result_storage.py            # 结果存储（CSV/JSON/图像/XML）
 │   ├── serial_comm.py               # 串口通信核心模块
 │   ├── serial_test_workflow.py      # 串口自动测试工作流（状态机）
-│   ├── product_manager.py           # 产品配置管理器
-│   └── inspection_workflow.py       # 自动化检测工作流（手动触发 + 多位置检测）
+│   ├── product_manager.py           # 产品配置管理器（grid 行列、motion 双轴、io 映射）
+│   ├── controller.py                # SMC6480 运动控制卡封装（轴运动、IO 读写）
+│   ├── smcsh_dll.py                 # SMC6480 DLL 封装（ctypes 绑定、PE 导出表解析）
+│   └── inspection_workflow.py       # 自动化检测工作流（多板卡检测、拼接、QR、运动、DI 触发）
 │
 ├── ui/                              # UI 界面模块
 │   ├── __init__.py
 │   ├── constants.py                 # 颜色、图标等 UI 常量
 │   ├── main_window.py               # 主窗口（工人/工程师双模式）
-│   ├── inspection_panel.py          # 检测面板
+│   ├── inspection_panel.py          # 检测面板（拼接整图显示）
 │   └── widgets/                     # 自定义控件
 │       ├── __init__.py
 │       ├── camera_panel.py          # 相机控制面板（含白平衡 R/G/B 调节 UI）
@@ -70,6 +72,7 @@ Vision_Substrate_Silicone/
 │       ├── pipeline_editor.py       # 流水线编辑器
 │       ├── result_panel.py          # 结果显示面板
 │       ├── serial_dialog.py         # 串口通信对话框
+│       ├── smc_dialog.py            # SMC6480 轴控制面板
 │       ├── step_slot_widget.py      # 步骤插槽控件（支持拖拽排序）
 │       └── zoomable_label.py        # 可缩放图片显示控件
 │
@@ -77,6 +80,7 @@ Vision_Substrate_Silicone/
 │   ├── __init__.py
 │   ├── pipeline.py                  # 流水线定义和管理（工具注册、步骤执行）
 │   ├── vision_engine.py             # 视觉引擎（执行入口、结果保存）
+│   ├── stitch.py                    # 图像拼接模块（增量累积画布，多板卡拼接）
 │   └── tools/                       # 视觉工具集（6 大类，34 种工具）
 │       ├── __init__.py
 │       ├── base_tool.py             # 工具基类（VisionTool、ToolResult、PipelineContext）
@@ -84,7 +88,7 @@ Vision_Substrate_Silicone/
 │       ├── feature_extract.py       # 特征提取工具（7 种）
 │       ├── geometry.py              # 几何检测工具（4 种）
 │       ├── measure.py               # 测量工具（7 种）
-│       ├── recognize.py             # 识别工具（4 种 + FootPadDetect 脚垫识别）
+│       ├── recognize.py             # 识别工具（含 QRCodeRecognize 二维码识别、TemplateMatch 多尺度）
 │       └── utility.py               # 辅助工具（3 种）
 │
 ├── gxipy/                           # 大恒 GalaxySDK Python 接口
@@ -100,15 +104,11 @@ Vision_Substrate_Silicone/
 │   ├── production data/             # 生产检测数据（按日期分目录）
 │   │   └── YYYY-MM-DD/
 │   │       ├── NG/                  # NG 数据（原始图像 + 结果图像 + CSV 日志）
-│   │       └── OK/                  # OK 数据（CSV 日志）
+│   │       └── OK/                  # OK 数据（按 SN 保存 + XML + CSV 日志）
 │   ├── schemes/                     # 检测方案文件（JSON 格式）
-│   │   ├── 默认方案.json
-│   │   ├── 位置1方案.json
-│   │   └── 位置2方案.json
+│   │   └── PCBA.json                # PCBA 视觉方案（MultiROI + TemplateMatch + QRCodeRecognize）
 │   ├── products/                    # 产品配置（JSON 格式）
-│   │   ├── 测试产品方案.json
-│   │   ├── 默认产品.json
-│   │   └── DX8.json
+│   │   └── DX8000_PCBA.json         # DX8000 产品配置（grid 行列、motion 双轴、io 映射）
 │   └── logs/                        # 系统日志（按天轮转）
 │
 ├── model/                           # 模型与样本文件
@@ -117,11 +117,18 @@ Vision_Substrate_Silicone/
 │   ├── title.jpg / title.png        # 标题检测样本
 │   └── title1.jpg / title1.png      # 标题检测样本
 │
-├── plans/                           # 开发计划文档（19 份）
+├── plans/                           # 开发计划文档
+│   ├── stitch_qr_multi_board_plan.md # 多板卡拼接 + QR 识别方案
+│   ├── smc6480_axis_control_plan.md  # SMC6480 轴控制方案
+│   └── control_mode_plan.md          # 控制模式方案
 │
-└── *.dll                            # 大恒相机 SDK DLL
+├── test_io_demo.py                  # IO 电平检测测试 Demo（扫描端口 + 按键映射）
+├── test_template_match_demo.py      # 模板匹配测试 Demo（多尺度匹配诊断）
+│
+└── *.dll                            # 大恒相机 SDK DLL + SMC6480 控制卡 DLL
     ├── GxIAPI.dll                   # 相机 API 库
-    └── DxImageProc.dll              # 图像处理库
+    ├── DxImageProc.dll              # 图像处理库
+    └── smcsh_mbs.dll                # SMC6480 运动控制卡库
 ```
 
 ---
@@ -264,27 +271,40 @@ BGR 图像输出
 - **状态机**：`IDLE → WAITING_TRIGGER → CAPTURING → TESTING → SENDING_RESULT`
 - **策略模式设计**：`TriggerParser`（触发解析）、`ResultSender`（结果发送）均可扩展
 
-### 7. 自动化检测工作流
+### 7. 自动化检测工作流（多板卡托盘检测）
 
-由 **手动触发**（或后续 SMC 轴控制触发）的多位置自动化检测工作流：
+由 **手动触发**（或 DI 触发）的多板卡托盘自动化检测工作流：
 
 ```
-IDLE → MONITORING → WAITING → SCANNING → CAPTURING → TESTING
-    → (循环: CAPTURING → TESTING 直到所有位置完成)
+IDLE → MONITORING → WAITING → CAPTURING → TESTING
+    → (循环: 运动到点位 → 拍照 → 检测 → 拼接 直到所有位置完成)
     → SHOW_RESULT → MONITORING
 ```
 
-- 产品配置管理：相机参数、运动参数、检测位置列表、条码扫描
+- **多板卡托盘检测**：每个点位对应一张独立板卡，逐点拍照检测
+- **图像拼接**：按行列网格紧密排列，实时刷新拼接整图（增量累积画布，内存优化）
+- **QR 识别**：每张板卡识别二维码作为 SN，按 SN 保存数据并生成 XML（供 MES 上传）
+- **SMC6480 轴运动控制**：起始位 → 各点位（行优先）→ 结束位 → 取出确认
+- **DI 触发**：上升沿检测，多按钮 IO 映射（启动/停止/复位/复判OK/复判NG/下料）
+- **检测工作线程化**：拍照/检测在工作线程执行，主线程保持空闲，DI 轮询持续运行
+- **STOP/复位流程**：STOP 停止所有动作并继续监听 IO，复位回到等待触发状态
+- 产品配置管理：grid 行列、motion 双轴、起始/结束位、点位 row/col/x/y/scheme、io 映射
 - 每个位置可关联独立的视觉方案
 - 统计信息：触发次数、OK 次数、NG 次数
-- 紧急停止、错误复位
-- DI 输入位可配置（触发位、OK 输出位、NG 输出位、复位位）
+
+### 8. SMC6480 运动控制卡
+
+- **DLL 封装**（[`core/smcsh_dll.py`](core/smcsh_dll.py:1)）：ctypes 绑定、PE 导出表解析、容错函数绑定
+- **控制器封装**（[`core/controller.py`](core/controller.py:1)）：连接（以太网/串口）、轴运动（绝对/相对/JOG/回零）、IO 读写
+- **轴控制面板**（[`ui/widgets/smc_dialog.py`](ui/widgets/smc_dialog.py:1)）：手动 JOG、绝对/相对定位、回零、伺服使能
+- 双轴运动（X/Y），位置检测到位（get_pulse_position）
+- 输出端口控制：红灯/绿灯
 
 ### 9. 结果记录
 
 - 自动保存检测结果（OK/NG）
 - **NG 数据保存**：原始图像、标注图像、JSON 数据
-- **OK 数据保存**：CSV 日志
+- **OK 数据保存**：按 QR SN 分目录保存 + 生成 XML（供 MES 上传）+ CSV 日志
 - 自动清理过期数据（默认保留 90 天）
 - 支持 `overlay_image` 工业叠加图层输出
 - 日志系统：按天轮转，自动清理（默认 50GB 限额）
@@ -311,11 +331,13 @@ IDLE → MONITORING → WAITING → SCANNING → CAPTURING → TESTING
 | [`paths.py`](core/paths.py) | 路径管理：数据目录、方案目录、日志目录等 | 函数式 |
 | [`config_manager.py`](core/config_manager.py) | 系统配置管理：相机参数、系统参数、显示参数 | **单例模式** |
 | [`log_manager.py`](core/log_manager.py) | 日志管理：按天轮转、自动清理（50GB 限额）、后台线程清理 | **单例模式**、自定义 Handler |
-| [`result_storage.py`](core/result_storage.py) | 结果存储：NG 数据（图像+JSON）、OK 日志（CSV）、过期清理 | — |
+| [`result_storage.py`](core/result_storage.py) | 结果存储：NG 数据（图像+JSON）、OK 数据（按 SN + XML）、过期清理 | — |
 | [`serial_comm.py`](core/serial_comm.py) | 串口通信：端口扫描、参数配置、异步读取线程、收发统计 | QThread 异步读取 |
 | [`serial_test_workflow.py`](core/serial_test_workflow.py) | 串口自动测试工作流：状态机、触发解析、结果发送 | **状态机**、**策略模式** |
-| [`product_manager.py`](core/product_manager.py) | 产品配置管理：CRUD 操作、默认配置模板 | 函数式 |
-| [`inspection_workflow.py`](core/inspection_workflow.py) | 自动化检测工作流：手动触发、多位置检测、扫码、视觉检测 | **状态机**、QTimer |
+| [`product_manager.py`](core/product_manager.py) | 产品配置管理：grid 行列、motion 双轴、io 映射、兼容迁移 | 函数式 |
+| [`controller.py`](core/controller.py) | SMC6480 运动控制卡：连接、轴运动、IO 读写、位置检测 | 封装 |
+| [`smcsh_dll.py`](core/smcsh_dll.py) | SMC6480 DLL 封装：ctypes 绑定、PE 导出表解析、容错函数绑定 | 封装 |
+| [`inspection_workflow.py`](core/inspection_workflow.py) | 自动化检测工作流：多板卡检测、拼接、QR、运动、DI 触发、工作线程 | **状态机**、QTimer、QThread |
 
 ### `vision/` — 视觉算法模块
 
@@ -323,6 +345,7 @@ IDLE → MONITORING → WAITING → SCANNING → CAPTURING → TESTING
 |------|------|
 | [`pipeline.py`](vision/pipeline.py) | 流水线定义：工具注册、步骤管理、执行引擎、中文/英文工具名映射 |
 | [`vision_engine.py`](vision/vision_engine.py) | 视觉引擎：流水线执行入口、overlay 叠加、ROI 结果绘制、NG 数据保存 |
+| [`stitch.py`](vision/stitch.py) | 图像拼接：增量累积画布、行列网格排列、OK/NG 标注、内存优化 |
 | [`tools/base_tool.py`](vision/tools/base_tool.py) | 工具基类：`VisionTool`（抽象基类）、`ToolResult`（数据类）、`PipelineContext`（上下文） |
 
 ### `ui/` — UI 界面模块
@@ -412,13 +435,16 @@ gxipy               # 大恒 GalaxySDK（内置于项目 gxipy/ 目录）
 - 默认工程师账号：`engineer` / `123456`
 - 默认操作员账号：`operator` / `123456`
 
-### 2. 自动化模式
+### 2. 自动化模式（多板卡托盘检测）
 
-1. 在工程师模式下创建产品配置（包含相机参数、运动参数、检测位置、条码扫描配置）
-2. 为每个位置关联视觉方案
+1. 在工程师模式下创建产品配置（grid 行列、motion 双轴、起始/结束位、点位 row/col/x/y/scheme、io 映射）
+2. 为每个位置关联视觉方案（MultiROI + TemplateMatch + QRCodeRecognize）
 3. 切换到自动化模式，选择产品
-4. 点击「启动监听」后，点击「手动触发」执行：拍照 → 检测
-5. 实时查看各位置检测结果（OK/NG）和统计信息
+4. 点击「启动监听」后，通过 DI 触发（启动按钮）或手动触发执行检测
+5. 系统自动：运动到各点位 → 拍照 → 检测 → 拼接 → 识别 QR（SN）
+6. 实时查看拼接整图和各位置检测结果（OK/NG）
+7. 检测完成后按 SN 保存数据并生成 XML（供 MES 上传）
+8. 按下 STOP 停止所有动作（继续监听 IO），按下复位回到等待触发状态
 
 ### 3. 设计模式（工程师模式）
 
@@ -527,10 +553,30 @@ pyinstaller main.spec
 11. 串口通信功能依赖 pyserial 库，请确保已安装
 12. 白平衡默认值（R=1.5, G=1.0, B=1.8）针对偏绿场景校正，可在相机面板中实时调节
 13. Gamma 校正和锐化强度可在 `camera_manager.py` 顶部调整，修改后重启程序生效
+14. SMC6480 运动控制卡需要 `smcsh_mbs.dll`（已从 git 排除，需手动放置到项目根目录）
+15. 产品配置的 `io` 字段使用 1-based IN 编号（如 IN2 填 2），可用 `test_io_demo.py` 扫描实际端口号
+16. 模板匹配支持多尺度搜索（`scale_min`/`scale_max`/`scale_step`），解决模板与目标尺寸不一致问题
+17. 相机图像翻转由 `camera_manager.py` 顶部的 `CAMERA_FLIP_180` 控制（True 表示水平+垂直翻转）
 
 ---
 
 ## 更新日志
+
+### v3.0.0 (2026-08-27) — 多板卡托盘检测 + SMC6480 运动控制
+
+- **多板卡托盘检测**：每个点位对应一张独立板卡，逐点拍照检测
+- **图像拼接**（[`vision/stitch.py`](vision/stitch.py:1)）：按行列网格紧密排列，增量累积画布，实时刷新拼接整图
+- **QR 识别**（[`vision/tools/recognize.py`](vision/tools/recognize.py:1)）：QRCodeRecognize 算子，多策略识别，识别结果作为板卡 SN
+- **XML 导出**（[`core/result_storage.py`](core/result_storage.py:1)）：按 SN 保存数据并生成 XML（供 MES 上传）
+- **SMC6480 运动控制卡**（[`core/controller.py`](core/controller.py:1)、[`core/smcsh_dll.py`](core/smcsh_dll.py:1)）：轴运动、IO 读写、位置检测
+- **轴控制面板**（[`ui/widgets/smc_dialog.py`](ui/widgets/smc_dialog.py:1)）：手动 JOG、绝对/相对定位、回零、伺服使能
+- **DI 触发**：上升沿检测，多按钮 IO 映射（启动/停止/复位/复判OK/复判NG/下料）
+- **STOP/复位流程**：STOP 停止所有动作并继续监听 IO，复位回到等待触发状态
+- **模板匹配多尺度**：自动搜索最佳缩放比例，解决模板与目标尺寸不一致问题
+- **内存优化**：增量拼接 + 检测后释放原始图，避免多张高分辨率图累积溢出
+- **检测工作线程化**（`InspectionWorker`）：拍照/检测在工作线程执行，主线程保持空闲，DI 轮询持续运行
+- **产品配置新结构**：grid 行列、motion 双轴、起始/结束位、点位 row/col/x/y/scheme、io 映射
+- **相机图像翻转**：支持水平+垂直翻转（`CAMERA_FLIP_180`）
 
 ### v2.3.1 (2026-07-06) — 1024x768 分辨率适配
 
@@ -622,9 +668,10 @@ pyinstaller main.spec
 | **GUI 框架** | PyQt5（Qt 信号/槽机制） |
 | **图像处理** | OpenCV 4.x（numpy 底层） |
 | **工业相机** | 大恒 GalaxySDK（gxipy） |
+| **运动控制卡** | SMC6480（smcsh_mbs.dll，ctypes 封装） |
 | **串口通信** | pyserial（异步 QThread 读取） |
 | **打包部署** | PyInstaller |
-| **数据存储** | JSON（方案/配置/用户）、CSV（日志）、图像文件 |
+| **数据存储** | JSON（方案/配置/用户）、CSV（日志）、XML（MES 上传）、图像文件 |
 
 ### 代码规模
 
