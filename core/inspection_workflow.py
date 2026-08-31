@@ -250,6 +250,9 @@ class InspectionWorkflow(QObject):
         self._state = self.State.IDLE
         self._running = False
 
+        # 自动确认模式（自动测试用）：NG 直接判 NG，不弹窗人工确认
+        self._auto_confirm = False
+
         # 触发后延时（等待工件放稳）
         self._start_delay_timer = QTimer(self)
         self._start_delay_timer.setSingleShot(True)
@@ -666,6 +669,13 @@ class InspectionWorkflow(QObject):
 
     # ── 手动触发 ──
 
+    def set_auto_confirm(self, enabled: bool):
+        """设置自动确认模式（自动测试用）。
+
+        启用后，NG 结果直接判 NG，不弹窗人工确认；OK 结果自动确认取出。
+        """
+        self._auto_confirm = bool(enabled)
+
     def start_inspection(self):
         """手动触发一次检测流程（替代原 DI 触发）"""
         if not self._running:
@@ -991,10 +1001,15 @@ class InspectionWorkflow(QObject):
             else:
                 self._set_state(self.State.MONITORING)
         else:
-            # NG：发射手工确认请求信号，等待 UI 层弹窗确认
-            log_info(f"检测结果为 NG，请求手工确认... | 总耗时: {total_elapsed:.2f}s")
-            self._set_state(self.State.WAITING_FOR_CONFIRM)  # 进入等待确认状态
-            self.ng_confirm_requested.emit(self._results)
+            # NG：若为自动确认模式（自动测试），直接判 NG，不弹窗人工确认
+            if self._auto_confirm:
+                log_info(f"检测结果为 NG（自动确认模式，直接判 NG）| 总耗时: {total_elapsed:.2f}s")
+                self.confirm_ng_result(False)
+            else:
+                # 发射手工确认请求信号，等待 UI 层弹窗确认
+                log_info(f"检测结果为 NG，请求手工确认... | 总耗时: {total_elapsed:.2f}s")
+                self._set_state(self.State.WAITING_FOR_CONFIRM)  # 进入等待确认状态
+                self.ng_confirm_requested.emit(self._results)
 
     def _on_reached_end_ok(self):
         """OK 流程：已运动到结束位，等待工人取出确认。"""

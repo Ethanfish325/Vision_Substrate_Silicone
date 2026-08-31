@@ -72,6 +72,9 @@ class AutoTestManager(QObject):
         self._ok_count = 0
         self._ng_count = 0
         self._waiting_confirm = False
+        # 启用工作流自动确认模式（NG 直接判 NG，不弹窗）
+        if hasattr(self._workflow, "set_auto_confirm"):
+            self._workflow.set_auto_confirm(True)
         self._emit_log(f"自动测试开始：共 {self._total} 次，间隔 {self._interval_ms}ms")
         self.progress_changed.emit(0, self._total)
         self.result_updated.emit(0, 0)
@@ -85,6 +88,9 @@ class AutoTestManager(QObject):
             return
         self._running = False
         self._interval_timer.stop()
+        # 关闭工作流自动确认模式
+        if hasattr(self._workflow, "set_auto_confirm"):
+            self._workflow.set_auto_confirm(False)
         self._emit_log(f"自动测试已停止（已完成 {self._current}/{self._total} 次）")
         self._save_results()
         self.finished.emit(self._ok_count, self._ng_count)
@@ -145,8 +151,9 @@ class AutoTestManager(QObject):
                     # 无轴运动时，工作流已回到 MONITORING，直接安排下一次
                     self._schedule_next()
             else:
-                # NG：自动确认为 NG
-                self._workflow.confirm_ng_result(False)
+                # NG：工作流在自动确认模式下已直接判 NG 并返回起始位，
+                # 等待状态回到 MONITORING 后触发下一次（由 _on_state_changed 处理）
+                pass
         except Exception as e:  # noqa: BLE001
             self._emit_log(f"自动确认异常: {e}")
             self._schedule_next()
@@ -173,6 +180,9 @@ class AutoTestManager(QObject):
     def _finish(self):
         """自动测试完成。"""
         self._running = False
+        # 关闭工作流自动确认模式
+        if hasattr(self._workflow, "set_auto_confirm"):
+            self._workflow.set_auto_confirm(False)
         self._emit_log(f"自动测试完成：OK={self._ok_count}, NG={self._ng_count}, "
                        f"共 {self._current} 次")
         self._save_results()

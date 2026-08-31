@@ -142,7 +142,12 @@ class _SizeCheckTimedRotatingFileHandler(TimedRotatingFileHandler):
 
     def emit(self, record: logging.LogRecord):
         """写入日志记录，写入后检查是否需要清理"""
-        super().emit(record)
+        try:
+            super().emit(record)
+        except Exception:  # noqa: BLE001
+            # 日志写入失败（如文件句柄失效、磁盘满）时静默处理，
+            # 避免 handleError 递归打印 traceback 导致 RecursionError 崩溃
+            pass
         now = time.time()
         if now - self._last_check_time >= self._check_interval:
             self._last_check_time = now
