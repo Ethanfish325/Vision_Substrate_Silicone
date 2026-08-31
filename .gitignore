@@ -52,3 +52,8 @@ _debug_roi/
 
 # Accidental empty file created by PowerShell redirect
 $null
+
+# User temporary test scripts
+import cv2.py
+_e2e_*.py
+_e2e_*.txt
