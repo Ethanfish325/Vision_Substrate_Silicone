@@ -372,13 +372,29 @@ class ParamConfigDialog(QDialog):
             result = self.tool.process(context)
             # 将 overlay（绿色轮廓标注）叠加到 processed_image 上显示
             display_img = result.processed_image
-            if display_img is not None and result.overlay_image is not None:
+            overlay = result.overlay_image
+            if display_img is not None and overlay is not None:
                 try:
-                    overlay = result.overlay_image
                     if overlay.shape[:2] == display_img.shape[:2]:
                         display_img = cv2.addWeighted(display_img, 1.0, overlay, 1.0, 0)
                 except Exception:  # noqa: BLE001
                     pass
+
+            # 若输入源为 ROI 区域，裁剪显示 ROI 局部图像（放大显示 ROI 内容）
+            if source.startswith("region:") and display_img is not None:
+                region_name = source[7:]
+                regions_map = self.context_info.get("regions_map", {})
+                if region_name in regions_map:
+                    rx, ry, rw, rh = regions_map[region_name]
+                    h_img, w_img = display_img.shape[:2]
+                    # 裁剪坐标不能超出图像边界
+                    rx = max(0, min(rx, w_img - 1))
+                    ry = max(0, min(ry, h_img - 1))
+                    rw = min(rw, w_img - rx)
+                    rh = min(rh, h_img - ry)
+                    if rw > 0 and rh > 0:
+                        display_img = display_img[ry:ry + rh, rx:rx + rw]
+
             if display_img is not None:
                 self._show_cv_image(display_img)
             else:
