@@ -132,6 +132,23 @@ class ColorRecognition(VisionTool):
         total_area = img.shape[0] * img.shape[1]
         area_ratio = (color_area / total_area) * 100 if total_area > 0 else 0
 
+        # 诊断日志：对比预览与流水线运行时的输入差异
+        try:
+            input_source = self.params.get("_input_source") or self.params.get("input_source", "current")
+            roi_info = ""
+            if input_source.startswith("region:"):
+                rname = input_source[7:]
+                if rname in context.regions:
+                    roi_info = f" ROI={context.regions[rname]}"
+                else:
+                    roi_info = f" ROI={rname}(未找到)"
+            has_model = bool(self.params.get("color_model"))
+            print(f"[ColorRecognition][诊断] 输入尺寸={img.shape[1]}x{img.shape[0]} "
+                  f"输入源={input_source}{roi_info} color_model={has_model} "
+                  f"匹配像素={color_area} 总像素={total_area} 占比={area_ratio:.2f}%")
+        except Exception:  # noqa: BLE001
+            pass
+
         display = img.copy()
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                         cv2.CHAIN_APPROX_SIMPLE)

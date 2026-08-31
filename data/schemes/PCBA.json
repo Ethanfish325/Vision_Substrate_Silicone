@@ -7,10 +7,10 @@
         "regions": [
           {
             "name": "COLOR",
-            "x": 189,
-            "y": 1302,
-            "width": 400,
-            "height": 400,
+            "x": 178,
+            "y": 1259,
+            "width": 450,
+            "height": 450,
             "enabled": true
           },
           {
@@ -63,24 +63,35 @@
           "name": "自定义颜色",
           "color_space": "HSV",
           "center": [
-            109,
-            49,
-            231
+            110,
+            34,
+            98
           ],
-          "match_mode": "range",
+          "match_mode": "cluster",
           "tolerance": [
-            5,
-            20,
-            20
+            10,
+            50,
+            50
           ],
-          "distance_threshold": 30.0,
-          "cluster_centers": [],
+          "distance_threshold": 47.40355682373047,
+          "cluster_centers": [
+            [
+              110,
+              34,
+              98
+            ],
+            [
+              135,
+              25,
+              95
+            ]
+          ],
           "normalize_illumination": false,
           "adaptive_threshold": false,
           "source": "custom"
         },
-        "match_mode": "range",
-        "distance_threshold": 30.0,
+        "match_mode": "distance",
+        "distance_threshold": 55.0,
         "normalize_illumination": false,
         "adaptive_threshold": false,
         "_input_source": "region:COLOR"
