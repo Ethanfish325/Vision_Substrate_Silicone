@@ -48,6 +48,8 @@ class ParamConfigDialog(QDialog):
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.setInterval(300)
         self._debounce_timer.timeout.connect(self._update_preview)
+        # 取色状态
+        self._color_picking = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -74,9 +76,50 @@ class ParamConfigDialog(QDialog):
         )
         preview_layout.addWidget(self.preview_label, 1)
 
+        # 交互取色控件（默认隐藏，点击"取色"时显示）
+        from .color_picker_widget import ColorPickerWidget
+        self.color_picker = ColorPickerWidget(parent=self)
+        self.color_picker.setMinimumSize(320, 240)
+        self.color_picker.hide()
+        self.color_picker.color_picked.connect(self._on_color_picked)
+        preview_layout.addWidget(self.color_picker, 1)
+
         preview_btn_row = QHBoxLayout()
         preview_btn_row.setContentsMargins(0, 0, 0, 0)
         preview_btn_row.addStretch()
+
+        # 取色模式切换
+        self.btn_pick_point = QPushButton("点选取色")
+        self.btn_pick_point.setCheckable(True)
+        self.btn_pick_point.setChecked(True)
+        self.btn_pick_point.setStyleSheet("""
+            QPushButton { background-color: #3c3c3c; color: #d4d4d4; padding: 4px 10px;
+                         border: 1px solid #555; border-radius: 2px; font-size: 13px; }
+            QPushButton:checked { background-color: #1a5c3a; color: #fff; border-color: #2a8c5a; }
+        """)
+        self.btn_pick_point.clicked.connect(lambda: self._set_pick_mode("point"))
+
+        self.btn_pick_rect = QPushButton("框选取色")
+        self.btn_pick_rect.setCheckable(True)
+        self.btn_pick_rect.setStyleSheet("""
+            QPushButton { background-color: #3c3c3c; color: #d4d4d4; padding: 4px 10px;
+                         border: 1px solid #555; border-radius: 2px; font-size: 13px; }
+            QPushButton:checked { background-color: #1a5c3a; color: #fff; border-color: #2a8c5a; }
+        """)
+        self.btn_pick_rect.clicked.connect(lambda: self._set_pick_mode("rect"))
+
+        self.btn_pick = QPushButton("🎨 取色")
+        self.btn_pick.setStyleSheet("""
+            QPushButton { background-color: #5c3a1a; color: #D9A04A; padding: 4px 12px;
+                         border: 1px solid #8c5a2a; border-radius: 2px; font-size: 13px; }
+            QPushButton:hover { background-color: #7c4a2a; }
+        """)
+        self.btn_pick.clicked.connect(self._toggle_color_pick)
+
+        preview_btn_row.addWidget(self.btn_pick_point)
+        preview_btn_row.addWidget(self.btn_pick_rect)
+        preview_btn_row.addWidget(self.btn_pick)
+
         self.btn_preview = QPushButton("预览")
         self.btn_preview.setStyleSheet("""
             QPushButton { background-color: #1a3a5c; color: #4A90D9; padding: 5px 16px;
@@ -236,6 +279,65 @@ class ParamConfigDialog(QDialog):
     def _on_param_changed(self):
         """参数变更时，重启防抖定时器"""
         self._debounce_timer.start()
+
+    # ========== 交互取色 ==========
+
+    def _set_pick_mode(self, mode: str):
+        """切换取色模式（点选/框选）。"""
+        self.btn_pick_point.setChecked(mode == "point")
+        self.btn_pick_rect.setChecked(mode == "rect")
+        self.color_picker.set_mode(mode)
+
+    def _toggle_color_pick(self):
+        """切换取色模式开关。"""
+        if self._color_picking:
+            self._exit_color_pick()
+        else:
+            self._enter_color_pick()
+
+    def _enter_color_pick(self):
+        """进入取色模式：显示取色控件并加载当前预览图像。"""
+        if self.preview_image is None:
+            return
+        self._color_picking = True
+        self.color_picker.set_image(self.preview_image)
+        self.color_picker.show()
+        self.preview_label.hide()
+        self.btn_pick.setText("✔ 完成取色")
+        self.btn_pick.setStyleSheet("""
+            QPushButton { background-color: #1a5c3a; color: #fff; padding: 4px 12px;
+                         border: 1px solid #2a8c5a; border-radius: 2px; font-size: 13px; }
+            QPushButton:hover { background-color: #2a7c4a; }
+        """)
+
+    def _exit_color_pick(self):
+        """退出取色模式：隐藏取色控件，恢复预览。"""
+        self._color_picking = False
+        self.color_picker.hide()
+        self.preview_label.show()
+        self.btn_pick.setText("🎨 取色")
+        self.btn_pick.setStyleSheet("""
+            QPushButton { background-color: #5c3a1a; color: #D9A04A; padding: 4px 12px;
+                         border: 1px solid #8c5a2a; border-radius: 2px; font-size: 13px; }
+            QPushButton:hover { background-color: #7c4a2a; }
+        """)
+        self._update_preview()
+
+    def _on_color_picked(self, model):
+        """取色完成：将 ColorModel 写入工具参数并触发预览。"""
+        try:
+            from vision.color.color_model import ColorModel
+            if not isinstance(model, ColorModel):
+                model = ColorModel.from_dict(model)
+            # 写入工具参数（双轨制：优先使用 color_model）
+            self.tool.params["color_model"] = model.to_dict()
+            # 同步更新旧参数（便于参数面板显示）
+            self.tool.params["color_name"] = model.name
+            self.tool.params["color_space"] = model.color_space
+            # 触发预览
+            self._update_preview()
+        except Exception as e:  # noqa: BLE001
+            print(f"[ParamConfigDialog] 取色写入参数失败: {e}")
 
     def _update_preview(self):
         if self.preview_image is None:

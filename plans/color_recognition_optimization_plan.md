@@ -1,5 +1,10 @@
 # 颜色识别算子系统性优化计划书
 
+> **实施状态：已完成**（2026-08-31）
+> 四个阶段全部实施完毕，31 个测试全部通过（含原有条码识别测试，无回归）。
+> 新增文件：`vision/color/` 包（5 个模块）、`ui/widgets/color_picker_widget.py`、`tests/test_color_recognition.py`。
+> 修改文件：`vision/tools/recognize.py`（双轨制 + 参数面板）、`ui/widgets/param_config_dialog.py`（取色集成）。
+
 ## 一、背景与目标
 
 ### 1.1 现状问题

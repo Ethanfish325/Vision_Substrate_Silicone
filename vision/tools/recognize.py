@@ -27,6 +27,17 @@ class ColorRecognition(VisionTool):
         self.params.setdefault("color_space", "HSV")
         # 区域颜色占比分析
         self.params.setdefault("analyze_regions", False)
+        # 新颜色模型（双轨制：优先使用 color_model，否则回退旧六参数）
+        self.params.setdefault("color_model", None)
+        # 匹配方式: "range" / "distance" / "cluster"
+        self.params.setdefault("match_mode", "range")
+        # 距离匹配阈值
+        self.params.setdefault("distance_threshold", 30.0)
+        # 光照归一化 / 自适应阈值
+        self.params.setdefault("normalize_illumination", False)
+        self.params.setdefault("adaptive_threshold", False)
+        # 颜色库实例（懒加载）
+        self._color_library = None
 
     # HSV颜色预设
     HSV_PRESETS = {
@@ -76,29 +87,42 @@ class ColorRecognition(VisionTool):
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
         color_space = self.params.get("color_space", "HSV")
-        
-        if color_space == "Lab":
-            converted = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)
-            channel_names = ("L", "a", "b")
-            max_vals = (255, 255, 255)
+
+        # 双轨制：优先使用新的 ColorModel，否则回退旧六参数区间
+        model_dict = self.params.get("color_model")
+        if model_dict:
+            from vision.color.color_model import ColorModel
+            from vision.color.color_matcher import ColorMatcher
+            model = ColorModel.from_dict(model_dict)
+            # 用参数面板的匹配方式/容差覆盖模型默认值（若用户调整过）
+            model.match_mode = self.params.get("match_mode", model.match_mode)
+            model.distance_threshold = float(
+                self.params.get("distance_threshold", model.distance_threshold))
+            model.normalize_illumination = bool(
+                self.params.get("normalize_illumination", model.normalize_illumination))
+            model.adaptive_threshold = bool(
+                self.params.get("adaptive_threshold", model.adaptive_threshold))
+            mask = ColorMatcher.build_mask(img, model)
+            color_space = model.color_space
         else:
-            converted = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-            channel_names = ("H", "S", "V")
-            max_vals = (180, 255, 255)
+            if color_space == "Lab":
+                converted = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)
+            else:
+                converted = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-        lower = np.array([
-            int(self.params.get("h_min", 0)),
-            int(self.params.get("s_min", 50)),
-            int(self.params.get("v_min", 50))
-        ])
-        upper = np.array([
-            int(self.params.get("h_max", 10)),
-            int(self.params.get("s_max", 255)),
-            int(self.params.get("v_max", 255))
-        ])
+            lower = np.array([
+                int(self.params.get("h_min", 0)),
+                int(self.params.get("s_min", 50)),
+                int(self.params.get("v_min", 50))
+            ])
+            upper = np.array([
+                int(self.params.get("h_max", 10)),
+                int(self.params.get("s_max", 255)),
+                int(self.params.get("v_max", 255))
+            ])
+            mask = cv2.inRange(converted, lower, upper)
 
-        mask = cv2.inRange(converted, lower, upper)
-
+        # 噪声抑制：形态学开闭运算
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
@@ -133,11 +157,18 @@ class ColorRecognition(VisionTool):
         pass_max = float(self.params.get("pass_max", 100))
         passed = pass_min <= area_ratio <= pass_max
 
+        # 颜色名称：优先使用 color_model 的名称，否则用 color_name 参数
+        model_dict = self.params.get("color_model")
+        if model_dict:
+            color_name = model_dict.get("name", self.params.get("color_name", "红色"))
+        else:
+            color_name = self.params.get("color_name", "红色")
+
         result_data = {
             "color_area": int(color_area),
             "area_ratio": float(area_ratio),
             "valid_regions": valid_count,
-            "color_name": self.params.get("color_name", "红色"),
+            "color_name": color_name,
             "color_space": color_space,
         }
         if self.params.get("analyze_regions", False):
@@ -185,8 +216,8 @@ class ColorRecognition(VisionTool):
         )
 
     def get_param_widgets(self, parent):
-        from PyQt5.QtWidgets import (QComboBox, QSpinBox, QHBoxLayout,
-                                      QWidget, QLabel, QSlider, QCheckBox)
+        from PyQt5.QtWidgets import (QComboBox, QSpinBox, QDoubleSpinBox,
+                                      QHBoxLayout, QWidget, QLabel, QSlider, QCheckBox)
         from PyQt5.QtCore import Qt
 
         widgets = []
@@ -203,6 +234,67 @@ class ColorRecognition(VisionTool):
             lambda i: self.params.update({"color_space": space_combo.itemData(i)}))
         widgets.append(("色彩空间:", space_combo))
 
+        # 颜色库选择（预设 + 自定义 + 临时）
+        from vision.color.color_library import ColorLibrary
+        if self._color_library is None:
+            self._color_library = ColorLibrary()
+        lib_combo = QComboBox(parent)
+        lib_combo.addItem("-- 选择颜色库 --", None)
+        for m in self._color_library.get_all():
+            lib_combo.addItem(f"[{m.source}] {m.name}", m.to_dict())
+
+        def on_lib_changed(idx):
+            data = lib_combo.itemData(idx)
+            if data is None:
+                return
+            self.params["color_model"] = data
+            self.params["color_name"] = data.get("name", "自定义颜色")
+            self.params["color_space"] = data.get("color_space", "HSV")
+            self.params["match_mode"] = data.get("match_mode", "range")
+            self.params["distance_threshold"] = data.get("distance_threshold", 30.0)
+            self.params["normalize_illumination"] = data.get("normalize_illumination", False)
+            self.params["adaptive_threshold"] = data.get("adaptive_threshold", False)
+
+        lib_combo.currentIndexChanged.connect(on_lib_changed)
+        widgets.append(("颜色库:", lib_combo))
+
+        # 匹配方式
+        mode_combo = QComboBox(parent)
+        mode_combo.addItem("区间匹配", "range")
+        mode_combo.addItem("距离匹配", "distance")
+        mode_combo.addItem("聚类匹配", "cluster")
+        current_mode = self.params.get("match_mode", "range")
+        idx = mode_combo.findData(current_mode)
+        if idx >= 0:
+            mode_combo.setCurrentIndex(idx)
+        mode_combo.currentIndexChanged.connect(
+            lambda i: self.params.update({"match_mode": mode_combo.itemData(i)}))
+        widgets.append(("匹配方式:", mode_combo))
+
+        # 距离阈值（distance/cluster 模式）
+        dist_spin = QDoubleSpinBox(parent)
+        dist_spin.setRange(1, 500)
+        dist_spin.setSingleStep(5)
+        dist_spin.setValue(float(self.params.get("distance_threshold", 30.0)))
+        dist_spin.valueChanged.connect(
+            lambda v: self.params.update({"distance_threshold": v}))
+        widgets.append(("距离阈值:", dist_spin))
+
+        # 光照归一化
+        norm_cb = QCheckBox(parent)
+        norm_cb.setChecked(self.params.get("normalize_illumination", False))
+        norm_cb.stateChanged.connect(
+            lambda v: self.params.update({"normalize_illumination": bool(v)}))
+        widgets.append(("光照归一化:", norm_cb))
+
+        # 自适应阈值
+        adapt_cb = QCheckBox(parent)
+        adapt_cb.setChecked(self.params.get("adaptive_threshold", False))
+        adapt_cb.stateChanged.connect(
+            lambda v: self.params.update({"adaptive_threshold": bool(v)}))
+        widgets.append(("自适应阈值:", adapt_cb))
+
+        # 颜色下拉（向后兼容，选择预设颜色）
         color_combo = QComboBox(parent)
         colors = ["红色", "绿色", "蓝色", "黄色", "橙色", "紫色", "白色", "黑色"]
         color_combo.addItems(colors)
