@@ -220,6 +220,10 @@ class ColorRecognition(VisionTool):
         combo = getattr(self, "_color_lib_combo", None)
         if combo is None:
             return
+        # 确保颜色库已初始化
+        if getattr(self, "_color_library", None) is None:
+            from vision.color.color_library import ColorLibrary
+            self._color_library = ColorLibrary()
         combo.blockSignals(True)
         combo.clear()
         combo.addItem("-- 选择颜色库 --", None)

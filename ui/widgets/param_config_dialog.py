@@ -336,6 +336,9 @@ class ParamConfigDialog(QDialog):
             self.tool.params["color_space"] = model.color_space
             self.tool.params["match_mode"] = model.match_mode
             self.tool.params["distance_threshold"] = model.distance_threshold
+            # 将取到的颜色加入临时颜色库，使下拉列表出现新颜色
+            if hasattr(self.tool, "_color_library") and self.tool._color_library is not None:
+                self.tool._color_library.add(model, persist=False)
             # 刷新颜色库下拉，使新颜色出现在列表中
             if hasattr(self.tool, "_refresh_color_lib_combo"):
                 self.tool._refresh_color_lib_combo()
@@ -367,8 +370,17 @@ class ParamConfigDialog(QDialog):
                     context.regions[region_name] = regions_map[region_name]
 
             result = self.tool.process(context)
-            if result.processed_image is not None:
-                self._show_cv_image(result.processed_image)
+            # 将 overlay（绿色轮廓标注）叠加到 processed_image 上显示
+            display_img = result.processed_image
+            if display_img is not None and result.overlay_image is not None:
+                try:
+                    overlay = result.overlay_image
+                    if overlay.shape[:2] == display_img.shape[:2]:
+                        display_img = cv2.addWeighted(display_img, 1.0, overlay, 1.0, 0)
+                except Exception:  # noqa: BLE001
+                    pass
+            if display_img is not None:
+                self._show_cv_image(display_img)
             else:
                 self._show_cv_image(self.preview_image)
         except Exception as e:
