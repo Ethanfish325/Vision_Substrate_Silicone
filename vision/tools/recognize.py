@@ -166,6 +166,7 @@ class ColorRecognition(VisionTool):
 
         result_data = {
             "color_area": int(color_area),
+            "total_area": int(total_area),
             "area_ratio": float(area_ratio),
             "valid_regions": valid_count,
             "color_name": color_name,

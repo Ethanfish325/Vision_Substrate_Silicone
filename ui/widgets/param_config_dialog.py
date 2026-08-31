@@ -395,6 +395,23 @@ class ParamConfigDialog(QDialog):
                     if rw > 0 and rh > 0:
                         display_img = display_img[ry:ry + rh, rx:rx + rw]
 
+            # 叠加显示颜色像素占比诊断信息
+            if display_img is not None and result.data:
+                try:
+                    color_area = result.data.get("color_area", 0)
+                    total_area = result.data.get("total_area", 0)
+                    area_ratio = result.data.get("area_ratio", 0.0)
+                    info = f"颜色占比={area_ratio:.1f}%  匹配像素={color_area}  总像素={total_area}"
+                    # 在图像左上角绘制半透明背景 + 文字
+                    overlay_text = display_img.copy()
+                    cv2.rectangle(overlay_text, (5, 5), (len(info) * 9 + 15, 30),
+                                  (0, 0, 0), -1)
+                    display_img = cv2.addWeighted(display_img, 0.7, overlay_text, 0.3, 0)
+                    cv2.putText(display_img, info, (10, 22),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
+                except Exception:  # noqa: BLE001
+                    pass
+
             if display_img is not None:
                 self._show_cv_image(display_img)
             else:
