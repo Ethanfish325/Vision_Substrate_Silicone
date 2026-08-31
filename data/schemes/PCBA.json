@@ -7,18 +7,18 @@
         "regions": [
           {
             "name": "COLOR",
-            "x": 178,
-            "y": 1259,
+            "x": 213,
+            "y": 1354,
             "width": 450,
             "height": 450,
             "enabled": true
           },
           {
             "name": "QR",
-            "x": 1076,
-            "y": 0,
-            "width": 428,
-            "height": 640,
+            "x": 1179,
+            "y": 79,
+            "width": 290,
+            "height": 600,
             "enabled": true
           }
         ],
@@ -91,7 +91,7 @@
           "source": "custom"
         },
         "match_mode": "distance",
-        "distance_threshold": 55.0,
+        "distance_threshold": 50.0,
         "normalize_illumination": false,
         "adaptive_threshold": false,
         "_input_source": "region:COLOR"

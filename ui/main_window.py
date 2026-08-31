@@ -220,6 +220,14 @@ class MainWindow(QMainWindow):
         self._inspection_workflow: Optional[InspectionWorkflow] = None
         self._init_inspection_workflow()
 
+        # 自动测试管理器（可靠性测试：自动循环触发检测 N 次）
+        from core.auto_test_manager import AutoTestManager
+        self._auto_test_manager = AutoTestManager(
+            workflow=self._inspection_workflow,
+            total=10, interval_ms=2000,
+            save_path="data/auto_test_results.csv",
+        )
+
         # 自动化检测面板（在 _build_automation_page 中创建）
         self._inspection_panel = None
 
@@ -1031,6 +1039,10 @@ class MainWindow(QMainWindow):
         self.act_log_settings = QAction("日志限额设置", self)
         self.act_log_settings.triggered.connect(self._show_log_settings)
         sys_menu.addAction(self.act_log_settings)
+        sys_menu.addSeparator()
+        self.act_auto_test = QAction("自动测试", self)
+        self.act_auto_test.triggered.connect(self._open_auto_test_dialog)
+        sys_menu.addAction(self.act_auto_test)
 
         help_menu = menubar.addMenu("帮助")
         self.act_about = QAction("关于", self)
@@ -2051,6 +2063,12 @@ class MainWindow(QMainWindow):
         #     self._detect_worker = None
         # === END ===
         log_info("_on_detect_finished 已禁用（生产模式已移除）")
+
+    def _open_auto_test_dialog(self):
+        """打开自动测试对话框（可靠性测试）。"""
+        from ui.widgets.auto_test_dialog import AutoTestDialog
+        dialog = AutoTestDialog(self._auto_test_manager, self)
+        dialog.exec_()
 
     def _show_log_settings(self):
         """打开日志限额设置对话框"""
