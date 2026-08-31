@@ -1011,12 +1011,34 @@ class InspectionWorkflow(QObject):
             # NG：若为自动确认模式（自动测试），直接判 NG，不弹窗人工确认
             if self._auto_confirm:
                 log_info(f"检测结果为 NG（自动确认模式，直接判 NG）| 总耗时: {total_elapsed:.2f}s")
-                self.confirm_ng_result(False)
+                self._handle_ng_auto()
             else:
                 # 发射手工确认请求信号，等待 UI 层弹窗确认
                 log_info(f"检测结果为 NG，请求手工确认... | 总耗时: {total_elapsed:.2f}s")
                 self._set_state(self.State.WAITING_FOR_CONFIRM)  # 进入等待确认状态
                 self.ng_confirm_requested.emit(self._results)
+
+    def _handle_ng_auto(self):
+        """自动确认模式下的 NG 处理：直接判 NG，不弹窗人工确认。
+
+        与 confirm_ng_result(False) 逻辑一致，但不要求 WAITING_FOR_CONFIRM 状态。
+        """
+        self._ng_count += 1
+        self.ng_count_changed.emit(self._ng_count)
+        log_info("自动确认: NG")
+        try:
+            self._save_ng_error_data()
+        except Exception as e:  # noqa: BLE001
+            log_warning(f"保存 NG 错误数据失败: {e}")
+        self.all_results_ready.emit(False, self._results)
+        # 释放结果图像，降低内存占用
+        self._release_result_images()
+        self.ng_confirm_closed.emit()
+        # 运动控制：返回起始位
+        if self._motion_enabled and self._controller is not None:
+            self._move_to_start(callback=self._on_returned_to_start)
+        else:
+            self._set_state(self.State.MONITORING)
 
     def _on_reached_end_ok(self):
         """OK 流程：已运动到结束位，等待工人取出确认。"""
