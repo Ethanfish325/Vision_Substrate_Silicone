@@ -996,7 +996,14 @@ class InspectionWorkflow(QObject):
                      f"(触发: {self._trigger_count}, OK: {self._ok_count}, NG: {self._ng_count})"
                      f" | 总耗时: {total_elapsed:.2f}s")
             # 若启用轴运动：运动到结束位，等待取出确认
-            if self._motion_enabled and self._controller is not None:
+            # 自动确认模式（自动测试）下：跳过取出确认，直接返回起始位
+            if self._auto_confirm:
+                if self._motion_enabled and self._controller is not None:
+                    log_info("自动确认模式：OK 直接返回起始位")
+                    self._move_to_start(callback=self._on_returned_to_start)
+                else:
+                    self._set_state(self.State.MONITORING)
+            elif self._motion_enabled and self._controller is not None:
                 self._move_to_end(callback=self._on_reached_end_ok)
             else:
                 self._set_state(self.State.MONITORING)
