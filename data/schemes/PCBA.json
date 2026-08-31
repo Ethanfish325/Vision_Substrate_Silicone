@@ -56,9 +56,9 @@
         "color_name": "自定义颜色",
         "min_area": 100,
         "pass_min": 0,
-        "pass_max": 100,
+        "pass_max": 8,
         "color_space": "HSV",
-        "analyze_regions": false,
+        "analyze_regions": true,
         "color_model": {
           "name": "自定义颜色",
           "color_space": "HSV",

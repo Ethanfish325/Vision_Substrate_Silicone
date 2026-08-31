@@ -1661,12 +1661,13 @@ class QRCodeRecognize(VisionTool):
         except Exception:  # noqa: BLE001
             pass
 
-        # 策略 4：多尺度放大（2x/3x/4x，小一维码），放大后同时尝试原始/自适应阈值/CLAHE
+        # 策略 4：多尺度放大（2x~6x，小一维码/垂直条码），放大后同时尝试原始/自适应阈值/CLAHE
         # 放大策略的 bbox 宽高非 0（位置准确），优先使用
+        # 注意：垂直条码（91~92°）对放大倍数敏感，需遍历多个倍数提高识别稳定性
         try:
             h, w = gray.shape[:2]
             if max(h, w) < 800:
-                for scale in (2, 3, 4):
+                for scale in (2, 3, 4, 5, 6):
                     up = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
                     _collect(pyzbar.decode(up), scale=scale, tag=f"4a_x{scale}")
                     # 放大后自适应阈值（小一维码放大后仍需二值化增强）
@@ -1674,7 +1675,7 @@ class QRCodeRecognize(VisionTool):
                         up, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                         cv2.THRESH_BINARY, 51, 10)
                     _collect(pyzbar.decode(up_bin), scale=scale, tag=f"4b_x{scale}")
-                    # 放大后 CLAHE
+                    # 放大后 CLAHE（对垂直条码识别关键）
                     up_clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(up)
                     _collect(pyzbar.decode(up_clahe), scale=scale, tag=f"4c_x{scale}")
                     if results:
