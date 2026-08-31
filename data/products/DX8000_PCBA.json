@@ -37,17 +37,6 @@
     "end_x": 100,
     "end_y": 15000
   },
-  "io": {
-    "start": 2,
-    "stop": 3,
-    "reset": 10,
-    "rejudge_ok": 11,
-    "rejudge_ng": 6,
-    "unload_sensor": 8,
-    "unload_btn": 7,
-    "red_light": 3,
-    "green_light": 4
-  },
   "di_bit": 2,
   "poll_interval_ms": 50,
   "positions": [

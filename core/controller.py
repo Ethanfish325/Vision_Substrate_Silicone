@@ -21,6 +21,7 @@ from core.smcsh_dll import (
     SYS_STATE_DESC,
     ERR_NOERR,
 )
+from core.log_manager import log_info, log_error
 
 
 class ControllerError(Exception):
@@ -57,6 +58,11 @@ class Controller:
         self._connected = False
         self._conn_type = None
         self._conn_string = None
+
+        # 指示灯状态（二合一灯：OUT3 红灯、OUT4 绿灯，低电平有效）
+        # 记录当前灯状态，避免不必要的重复写
+        self._light_red_on = None
+        self._light_green_on = None
 
     # ------------------------------------------------------------------
     # 属性
@@ -461,6 +467,43 @@ class Controller:
         self._check_connected()
         return self._dll.get_cur_speed(self._handle, iaxis)
 
+    def set_home_params(self, iaxis: int, start_speed: int = 100,
+                        zero_speed: int = 100, acc: int = 1000,
+                        dec: int = 1000, s_curve: float = 0.0,
+                        zero_dir: int = 0, zero_mode: int = 3) -> None:
+        """设置回零参数（与官方程序一致）。
+
+        官方回零调用序列：
+            MSetting_SetStartSpeed(handle, axis, start_speed)
+            MSetting_SetZeroSpeed(handle, axis, zero_speed)   # 回零低速
+            MSetting_SetAcceleration(handle, axis, acc)
+            MSetting_SetDeceleration(handle, axis, dec)
+            MSetting_SetSCurveSet(handle, axis, s_curve)
+            MSetting_SetZeroDir(handle, axis, zero_dir)       # 回零方向
+            MSetting_SetZeroMode(handle, axis, zero_mode)     # 回零模式
+            Motion_Home_FindOrigin(handle, axis)
+
+        :param iaxis: 轴号（0-3）
+        :param start_speed: 启动速度
+        :param zero_speed: 回零低速（回零时的速度）
+        :param acc: 加速度
+        :param dec: 减速度
+        :param s_curve: S 曲线时间
+        :param zero_dir: 回零方向
+        :param zero_mode: 回零模式
+        """
+        self._check_connected()
+        dll = self._dll
+        handle = self._handle
+        # 依次设置回零参数（与官方程序一致）
+        dll.set_start_speed(handle, iaxis, start_speed)
+        dll.set_zero_speed(handle, iaxis, zero_speed)
+        dll.set_acceleration(handle, iaxis, acc)
+        dll.set_deceleration(handle, iaxis, dec)
+        dll.set_s_curve(handle, iaxis, s_curve)
+        dll.set_zero_dir(handle, iaxis, zero_dir)
+        dll.set_zero_mode(handle, iaxis, zero_mode)
+
     def home_move(self, iaxis: int) -> None:
         """
         回零运动（Motion_Home_FindOrigin）。
@@ -556,6 +599,64 @@ class Controller:
             raise ControllerError(
                 f"设置输出端口失败 (OUT{port + 1}): {self._dll.get_errcode_description(err)}"
             )
+
+    # ------------------------------------------------------------------
+    # 指示灯控制（二合一灯：OUT3 红灯、OUT4 绿灯，低电平有效）
+    # ------------------------------------------------------------------
+    # 硬件说明：
+    #   - OUT3 对应红灯，OUT4 对应绿灯
+    #   - 低电平有效：写 0 点亮，写 1 熄灭
+    #   - 红灯 + 绿灯同时导通（都写 0）时，物理上显示黄灯
+    #   - 灭灯时需要将两个位都写 1
+    # 端口号与官方 SMCWriteOutBit 一致（红灯=3，绿灯=4）：
+    #   SMCWriteOutBit(handle, 3, 0) 点亮红灯
+    #   SMCWriteOutBit(handle, 4, 0) 点亮绿灯
+    # 注意：set_out_port(port, value) 中 value=True 写 1（高电平），
+    #       value=False 写 0（低电平）。因此点亮灯需传 False，熄灭传 True。
+    LIGHT_RED_PORT = 3    # OUT3 红灯（SMCWriteOutBit 端口 3）
+    LIGHT_GREEN_PORT = 4  # OUT4 绿灯（SMCWriteOutBit 端口 4）
+
+    def set_light_state(self, red_on: bool, green_on: bool) -> None:
+        """统一控制红/绿指示灯状态（二合一灯，低电平有效）。
+
+        红灯 + 绿灯同时点亮时物理上显示黄灯。
+        内部管理 OUT3/OUT4 的写入，避免不必要的重复写，并输出日志。
+
+        Args:
+            red_on: True=点亮红灯，False=熄灭红灯
+            green_on: True=点亮绿灯，False=熄灭绿灯
+        """
+        if not self.is_connected:
+            return
+
+        # 低电平有效：点亮传 False（写 0），熄灭传 True（写 1）
+        red_value = not red_on
+        green_value = not green_on
+
+        # 避免不必要的重复写（仅状态变化时写入）
+        if red_value != self._light_red_on:
+            try:
+                self.set_out_port(self.LIGHT_RED_PORT, red_value)
+                self._light_red_on = red_value
+            except ControllerError as e:
+                log_error(f"设置红灯失败: {e}")
+        if green_value != self._light_green_on:
+            try:
+                self.set_out_port(self.LIGHT_GREEN_PORT, green_value)
+                self._light_green_on = green_value
+            except ControllerError as e:
+                log_error(f"设置绿灯失败: {e}")
+
+        # 输出日志（仅状态变化时）
+        if red_on and green_on:
+            state_desc = "黄灯"
+        elif red_on:
+            state_desc = "红灯"
+        elif green_on:
+            state_desc = "绿灯"
+        else:
+            state_desc = "灭灯"
+        log_info(f"指示灯状态: {state_desc} (红={red_on}, 绿={green_on})")
 
     # ------------------------------------------------------------------
     # 内部工具

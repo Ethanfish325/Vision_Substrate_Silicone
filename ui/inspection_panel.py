@@ -140,8 +140,18 @@ class PositionResultWidget(QFrame):
         elif result.raw_image is not None:
             self._display_image(result.raw_image)
 
-        # 更新消息
-        self._message_label.setText(result.message)
+        # 更新消息（含条码详情）
+        msg = result.message or ""
+        if getattr(result, "barcodes", None):
+            parts = []
+            for bc in result.barcodes:
+                btype = bc.get("type", "")
+                bdata = bc.get("data", "")
+                conf = bc.get("confidence", 0)
+                parts.append(f"{btype}:{bdata} (置信度{conf:.2f})")
+            if parts:
+                msg = msg + "\n" + " | ".join(parts)
+        self._message_label.setText(msg)
 
     def show_waiting(self):
         """显示等待状态"""
@@ -238,6 +248,8 @@ class InspectionPanel(QWidget):
     """请求停止监听"""
     reset_requested = pyqtSignal()
     """请求复位错误"""
+    home_requested = pyqtSignal()
+    """请求手动触发完整自动回零（安全顺序：先 Z 轴抬起，再 X/Y 轴）"""
     product_changed = pyqtSignal(str)
     """产品切换信号 (产品名称)"""
 
@@ -329,6 +341,22 @@ class InspectionPanel(QWidget):
 
         top_layout.addWidget(result_label)
         top_layout.addWidget(self._final_result_label)
+
+        # 回零状态指示（未回零 / 回零中 / 已回零）
+        home_label = QLabel("回零:")
+        home_label.setStyleSheet("font-size: 13px; color: #d4d4d4; font-weight: bold; border: none;")
+
+        self._home_state_label = QLabel("未回零")
+        self._home_state_label.setAlignment(Qt.AlignCenter)
+        self._home_state_label.setMinimumWidth(70)
+        self._home_state_label.setStyleSheet("""
+            font-size: 13px; font-weight: bold; color: #f44336;
+            background-color: #2a1a1a; border: 1px solid #C62828;
+            border-radius: 3px; padding: 2px 8px;
+        """)
+
+        top_layout.addWidget(home_label)
+        top_layout.addWidget(self._home_state_label)
         top_layout.addStretch()
 
         # 控制按钮
@@ -622,7 +650,11 @@ class InspectionPanel(QWidget):
         self._append_log(f"已重新加载产品方案: {product_name}")
         
     def _on_reset_clicked(self):
-        """复位按钮点击"""
+        """复位按钮点击
+
+        复位错误状态，并触发一次完整自动回零（安全顺序：先 Z 轴抬起，再 X/Y 轴）。
+        回零过程中的防重复触发 / 急停处理由主窗口的 _start_home_sequence 负责。
+        """
         if self._workflow:
             self._workflow.reset_error()
         self._btn_start.setEnabled(True)
@@ -635,8 +667,10 @@ class InspectionPanel(QWidget):
             background-color: #1e1e1e; border: 1px solid #444;
             border-radius: 3px; padding: 2px 8px;
         """)
-        self._append_log("已复位")
+        self._append_log("已复位，触发自动回零...")
         self.reset_requested.emit()
+        # 触发完整自动回零（主窗口处理）
+        self.home_requested.emit()
 
     def _on_product_changed(self, product_name: str):
         """产品切换"""
@@ -1050,3 +1084,34 @@ class InspectionPanel(QWidget):
     def get_current_product(self) -> str:
         """获取当前选择的产品名称"""
         return self._product_combo.currentText()
+
+    def set_home_state(self, state: str):
+        """更新回零状态指示（未回零 / 回零中 / 已回零）。
+
+        由主窗口在回零状态变化时调用。
+
+        Args:
+            state: "未回零" / "回零中" / "已回零"
+        """
+        if not hasattr(self, '_home_state_label'):
+            return
+        self._home_state_label.setText(state)
+        if state == "已回零":
+            style = """
+                font-size: 13px; font-weight: bold; color: #66BB6A;
+                background-color: #1a3a1a; border: 1px solid #4CAF50;
+                border-radius: 3px; padding: 2px 8px;
+            """
+        elif state == "回零中":
+            style = """
+                font-size: 13px; font-weight: bold; color: #FFA000;
+                background-color: #2a2a1a; border: 1px solid #FF8F00;
+                border-radius: 3px; padding: 2px 8px;
+            """
+        else:  # 未回零
+            style = """
+                font-size: 13px; font-weight: bold; color: #f44336;
+                background-color: #2a1a1a; border: 1px solid #C62828;
+                border-radius: 3px; padding: 2px 8px;
+            """
+        self._home_state_label.setStyleSheet(style)

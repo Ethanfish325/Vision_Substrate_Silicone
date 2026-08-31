@@ -88,7 +88,7 @@ Vision_Substrate_Silicone/
 │       ├── feature_extract.py       # 特征提取工具（7 种）
 │       ├── geometry.py              # 几何检测工具（4 种）
 │       ├── measure.py               # 测量工具（7 种）
-│       ├── recognize.py             # 识别工具（含 QRCodeRecognize 二维码识别、TemplateMatch 多尺度）
+│       ├── recognize.py             # 识别工具（含 QRCodeRecognize 通用条码识别、TemplateMatch 多尺度）
 │       └── utility.py               # 辅助工具（3 种）
 │
 ├── gxipy/                           # 大恒 GalaxySDK Python 接口
@@ -283,7 +283,7 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 
 - **多板卡托盘检测**：每个点位对应一张独立板卡，逐点拍照检测
 - **图像拼接**：按行列网格紧密排列，实时刷新拼接整图（增量累积画布，内存优化）
-- **QR 识别**：每张板卡识别二维码作为 SN，按 SN 保存数据并生成 XML（供 MES 上传）
+- **条码识别**：每张板卡识别二维码/一维码作为 SN，按 SN 保存数据并生成 XML（供 MES 上传）
 - **SMC6480 轴运动控制**：起始位 → 各点位（行优先）→ 结束位 → 取出确认
 - **DI 触发**：上升沿检测，多按钮 IO 映射（启动/停止/复位/复判OK/复判NG/下料）
 - **检测工作线程化**：拍照/检测在工作线程执行，主线程保持空闲，DI 轮询持续运行
@@ -566,7 +566,7 @@ pyinstaller main.spec
 
 - **多板卡托盘检测**：每个点位对应一张独立板卡，逐点拍照检测
 - **图像拼接**（[`vision/stitch.py`](vision/stitch.py:1)）：按行列网格紧密排列，增量累积画布，实时刷新拼接整图
-- **QR 识别**（[`vision/tools/recognize.py`](vision/tools/recognize.py:1)）：QRCodeRecognize 算子，多策略识别，识别结果作为板卡 SN
+- **条码识别**（[`vision/tools/recognize.py`](vision/tools/recognize.py:1)）：QRCodeRecognize 算子升级为通用条码识别（二维码 + 一维码，pyzbar），识别结果作为板卡 SN
 - **XML 导出**（[`core/result_storage.py`](core/result_storage.py:1)）：按 SN 保存数据并生成 XML（供 MES 上传）
 - **SMC6480 运动控制卡**（[`core/controller.py`](core/controller.py:1)、[`core/smcsh_dll.py`](core/smcsh_dll.py:1)）：轴运动、IO 读写、位置检测
 - **轴控制面板**（[`ui/widgets/smc_dialog.py`](ui/widgets/smc_dialog.py:1)）：手动 JOG、绝对/相对定位、回零、伺服使能

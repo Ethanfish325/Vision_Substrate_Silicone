@@ -226,6 +226,15 @@ class MainWindow(QMainWindow):
         # SMC6480 运动控制卡
         self._smc_controller: Optional[Controller] = None
 
+        # 回零状态机（未回零 / 回零中 / 已回零）
+        self._home_state = "未回零"
+        self._home_in_progress = False
+        self._home_axes = []
+        self._home_axis_index = 0
+        self._home_wait_count = 0
+        self._home_wait_ticks = 5
+        self._home_poll_timer = None
+
         self._setup_ui()
         self._load_schemes()
         self._auto_load_default_scheme()
@@ -579,6 +588,8 @@ class MainWindow(QMainWindow):
             workflow=self._inspection_workflow,
             parent=page
         )
+        # 复位按钮 → 手动触发完整自动回零（安全顺序：先 Z 轴抬起，再 X/Y 轴）
+        self._inspection_panel.home_requested.connect(self._start_home_sequence)
         layout.addWidget(self._inspection_panel, 1)
 
         self.stack.addWidget(page)
@@ -599,6 +610,10 @@ class MainWindow(QMainWindow):
         smc = getattr(self, '_smc_controller', None)
         if smc is not None:
             self._inspection_workflow.set_controller(smc)
+        # 自动化流程结束信号 → 指示灯控制（OK 亮绿灯，NG 亮红灯）
+        self._inspection_workflow.all_results_ready.connect(self._on_workflow_all_results)
+        # 启动触发信号 → 立即熄灭指示灯（8 秒内再次启动则灯直接熄灭）
+        self._inspection_workflow.trigger_count_changed.connect(self._on_workflow_triggered)
 
     def _build_engineer_page(self):
         page = QWidget()
@@ -1301,8 +1316,168 @@ class MainWindow(QMainWindow):
         try:
             self._smc_controller.connect_eth(DEFAULT_SMC_IP)
             log_info(f"SMC6480 自动连接成功: {DEFAULT_SMC_IP}")
+            # 连接成功后先灭灯（其他运行阶段保持灭灯，避免状态冲突）
+            self._set_light(red_on=False, green_on=False)
+            # 注意：上电后各轴保持当前位置，不自动执行任何回零动作。
+            # 回零改为手动「复位」按钮触发（见 _start_home_sequence）。
+            self._set_home_state("未回零")
         except ControllerError as e:
             log_warning(f"SMC6480 自动连接失败: {e}（可通过轴控制面板手动重连）")
+            self._set_home_state("未回零")
+
+    # 回零参数（写死在代码中，与官方程序一致，避免跑过限位）
+    HOME_START_SPEED = 100    # 启动速度
+    HOME_ZERO_SPEED = 1000     # 回零低速（回零时的速度）
+    HOME_ACC = 1000           # 加速度
+    HOME_DEC = 1000           # 减速度
+    HOME_S_CURVE = 0.0        # S 曲线时间
+    HOME_ZERO_DIR = 0         # 回零方向
+    HOME_ZERO_MODE = 3        # 回零模式
+
+    def _set_home_speed(self, iaxis: int):
+        """设置指定轴的回零参数（与官方程序一致，通过 set_home_params）。"""
+        try:
+            self._smc_controller.set_home_params(
+                iaxis,
+                start_speed=self.HOME_START_SPEED,
+                zero_speed=self.HOME_ZERO_SPEED,
+                acc=self.HOME_ACC,
+                dec=self.HOME_DEC,
+                s_curve=self.HOME_S_CURVE,
+                zero_dir=self.HOME_ZERO_DIR,
+                zero_mode=self.HOME_ZERO_MODE,
+            )
+            log_info(f"轴 {iaxis} 回零参数已设置 (低速={self.HOME_ZERO_SPEED}, "
+                     f"启动={self.HOME_START_SPEED}, 加速度={self.HOME_ACC})")
+        except Exception as e:  # noqa: BLE001
+            log_warning(f"设置轴 {iaxis} 回零参数失败: {e}")
+
+    # 回零轴顺序（安全顺序：先 Z 轴抬起，再 X/Y 轴）
+    # Z 轴号默认 2（Axis2），X/Y 轴号与产品配置 motion.x_axis / motion.y_axis 一致
+    HOME_AXIS_Z = 2
+
+    def _set_home_state(self, state: str):
+        """更新回零状态并通知自动化面板刷新状态指示。
+
+        state: "未回零" / "回零中" / "已回零"
+        """
+        self._home_state = state
+        log_info(f"回零状态: {state}")
+        # 通知自动化面板更新状态指示
+        if hasattr(self, '_inspection_panel') and self._inspection_panel is not None:
+            try:
+                self._inspection_panel.set_home_state(state)
+            except Exception as e:  # noqa: BLE001
+                log_warning(f"更新回零状态指示失败: {e}")
+
+    def _start_home_sequence(self):
+        """手动触发完整自动回零（安全顺序：先 Z 轴抬起，再 X/Y 轴）。
+
+        由自动化面板的「复位」按钮调用。回零过程中：
+            - 防重复触发：若已在回零中，直接忽略本次请求
+            - 急停处理：回零过程中再次按下复位按钮将立即停止回零
+        回零前设置回零速度（避免跑过限位），回零过程中显示黄灯。
+        由于 Motion_CheckDown / Motion_Home_IfHoming 等状态查询函数在部分
+        DLL 版本中调用会返回错误，这里改用固定延时等待回零完成。
+        """
+        if self._smc_controller is None or not self._smc_controller.is_connected:
+            log_warning("控制器未连接，无法回零")
+            return
+
+        # 防重复触发 / 急停处理：若正在回零中，再次按下复位则立即停止回零
+        if getattr(self, '_home_in_progress', False):
+            log_warning("回零进行中，复位按钮触发急停，停止回零")
+            self._abort_home_sequence()
+            return
+
+        # 回零开始 → 显示黄灯（红灯 + 绿灯同时点亮）
+        self._set_light(red_on=True, green_on=True)
+        self._set_home_state("回零中")
+        self._home_in_progress = True
+
+        # 回零轴顺序：先 Z 轴抬起，再 X/Y 轴
+        self._home_axes = [self.HOME_AXIS_Z, 0, 1]
+        self._home_axis_index = 0
+        self._home_wait_count = 0
+        self._home_wait_ticks = 5  # 每个轴回零等待 5 秒（100ms × 50）
+
+        # 启动第一个轴（Z 轴）的硬件回零（先设置回零速度）
+        try:
+            self._set_home_speed(self._home_axes[0])
+            self._smc_controller.home_move(self._home_axes[0])
+            log_info(f"轴 {self._home_axes[0]} 开始硬件回零")
+        except Exception as e:  # noqa: BLE001
+            log_warning(f"轴 {self._home_axes[0]} 回零启动失败: {e}")
+            self._home_axis_index += 1
+
+        # 启动回零轮询定时器（固定延时等待）
+        if not hasattr(self, '_home_poll_timer') or self._home_poll_timer is None:
+            from PyQt5.QtCore import QTimer
+            self._home_poll_timer = QTimer(self)
+            self._home_poll_timer.timeout.connect(self._on_home_poll)
+        self._home_poll_timer.start(100)
+        log_info("开始手动硬件回零（Z→X/Y）...")
+
+    def _abort_home_sequence(self):
+        """急停回零：立即停止所有轴回零，回到未回零状态。"""
+        if self._smc_controller is not None and self._smc_controller.is_connected:
+            for iaxis in self._home_axes:
+                try:
+                    self._smc_controller.imd_stop(iaxis)
+                except Exception as e:  # noqa: BLE001
+                    log_warning(f"急停轴 {iaxis} 失败: {e}")
+        if hasattr(self, '_home_poll_timer') and self._home_poll_timer is not None:
+            self._home_poll_timer.stop()
+        self._home_in_progress = False
+        self._set_light(red_on=False, green_on=False)
+        self._set_home_state("未回零")
+        log_warning("回零已急停，各轴保持当前位置")
+
+    def _on_home_poll(self):
+        """固定延时等待回零完成，依次回零 Z→X/Y 轴。
+
+        由于状态查询函数（Motion_CheckDown / Motion_Home_IfHoming）在部分
+        DLL 版本中调用会返回错误，这里用固定延时（每轴 5 秒）等待回零完成。
+        回零完成后灭灯并更新状态为「已回零」。
+        """
+        if self._smc_controller is None or not self._smc_controller.is_connected:
+            if hasattr(self, '_home_poll_timer') and self._home_poll_timer is not None:
+                self._home_poll_timer.stop()
+            self._home_in_progress = False
+            self._set_home_state("未回零")
+            log_warning("控制器断开，回零中断")
+            return
+
+        if self._home_axis_index >= len(self._home_axes):
+            # 所有轴回零完成 → 灭灯，状态置为已回零
+            if hasattr(self, '_home_poll_timer') and self._home_poll_timer is not None:
+                self._home_poll_timer.stop()
+            self._home_in_progress = False
+            self._set_light(red_on=False, green_on=False)
+            self._set_home_state("已回零")
+            log_info("手动硬件回零完成，Z/X/Y 轴已回到原点")
+            return
+
+        # 等待当前轴回零完成（固定延时）
+        self._home_wait_count += 1
+        if self._home_wait_count < self._home_wait_ticks:
+            return
+
+        # 当前轴回零等待结束，启动下一个轴回零
+        iaxis = self._home_axes[self._home_axis_index]
+        log_info(f"轴 {iaxis} 回零等待结束")
+        self._home_axis_index += 1
+        self._home_wait_count = 0
+
+        if self._home_axis_index < len(self._home_axes):
+            next_axis = self._home_axes[self._home_axis_index]
+            try:
+                self._set_home_speed(next_axis)
+                self._smc_controller.home_move(next_axis)
+                log_info(f"轴 {next_axis} 开始硬件回零")
+            except Exception as e:  # noqa: BLE001
+                log_warning(f"轴 {next_axis} 回零启动失败: {e}")
+                self._home_axis_index += 1
 
     def _on_smc_connection_changed(self, connected: bool):
         """轴控制面板连接状态变化回调 - 同步主窗口的控制器引用。"""
@@ -2249,6 +2424,60 @@ class MainWindow(QMainWindow):
         # === END ===
         self.status_label.setText(f"自动测试错误: {error_msg}")
         log_error(f"自动测试错误: {error_msg}")
+
+    # ──────────────── 指示灯控制（红/绿/黄三色） ────────────────
+
+    def _set_light(self, red_on: bool, green_on: bool):
+        """安全设置指示灯状态（红/绿/黄三色，二合一灯）。
+
+        红灯 + 绿灯同时点亮时物理上显示黄灯。
+        通过 _smc_controller.set_light_state 控制 OUT3/OUT4。
+        """
+        smc = getattr(self, '_smc_controller', None)
+        if smc is None or not smc.is_connected:
+            return
+        try:
+            smc.set_light_state(red_on, green_on)
+        except Exception as e:  # noqa: BLE001
+            log_warning(f"设置指示灯失败: {e}")
+
+    def _on_workflow_triggered(self, count: int):
+        """启动触发 → 立即熄灭指示灯（8 秒内再次启动则灯直接熄灭）。"""
+        self._turn_off_light()
+
+    def _on_workflow_all_results(self, final_ok: bool, results):
+        """自动化流程结束 → 指示灯控制。
+
+        OK 亮绿灯，NG 亮红灯（需求未明确 NG 行为，按红灯处理）。
+        灯只亮 8 秒后自动熄灭；若 8 秒内再次按下启动按钮，灯直接熄灭。
+        """
+        # 取消上一次的自动灭灯定时器
+        if hasattr(self, '_light_off_timer') and self._light_off_timer is not None:
+            self._light_off_timer.stop()
+
+        if final_ok:
+            self._set_light(red_on=False, green_on=True)   # OK → 绿灯
+        else:
+            self._set_light(red_on=True, green_on=False)   # NG → 红灯
+
+        # 8 秒后自动灭灯
+        if not hasattr(self, '_light_off_timer') or self._light_off_timer is None:
+            from PyQt5.QtCore import QTimer
+            self._light_off_timer = QTimer(self)
+            self._light_off_timer.setSingleShot(True)
+            self._light_off_timer.timeout.connect(self._on_light_off_timeout)
+        self._light_off_timer.start(8000)
+
+    def _on_light_off_timeout(self):
+        """8 秒定时器超时 → 灭灯。"""
+        self._set_light(red_on=False, green_on=False)
+        log_info("指示灯 8 秒超时，自动熄灭")
+
+    def _turn_off_light(self):
+        """立即熄灭指示灯（启动按钮按下时调用）。"""
+        if hasattr(self, '_light_off_timer') and self._light_off_timer is not None:
+            self._light_off_timer.stop()
+        self._set_light(red_on=False, green_on=False)
 
     def closeEvent(self, event):
         log_info("系统关闭")

@@ -71,7 +71,8 @@ class PositionResult:
     raw_image: Optional[np.ndarray] = None  # 原始图
     tool_results: list = field(default_factory=list)  # 工具检测结果
     elapsed_ms: float = 0.0            # 检测耗时
-    qr_data: str = ""                  # QR 识别结果（板卡 SN）
+    qr_data: str = ""                  # 条码识别结果（板卡 SN）
+    barcodes: list = field(default_factory=list)  # 识别到的条码详情列表
 
 
 # ============================================================================
@@ -827,6 +828,8 @@ class InspectionWorkflow(QObject):
         )
         # 附加 QR SN 到结果对象
         result.qr_data = qr_data
+        # 提取条码详情（类型/内容/坐标/置信度）到结果对象，供结果面板展示
+        result.barcodes = self._extract_barcodes(tool_results)
         self._results.append(result)
 
         log_info(f"位置 {self._current_pos_index + 1} [{result.name}]: {'OK' if passed else 'NG'} | {message}"
@@ -837,6 +840,12 @@ class InspectionWorkflow(QObject):
 
         # 将该点位标注图拼入整体图并刷新显示
         self._add_to_stitch(result, pos)
+
+        # 拼入拼接器后立即释放该张板卡的原始图/标注图，降低内存占用
+        # （拼接器已保存缩放后的图像，结果面板已通过信号拿到图像，后续不再需要）
+        result.annotated = None
+        result.raw_image = None
+        result.tool_results = []
 
         # 移动到下一个位置
         self._current_pos_index += 1
@@ -865,6 +874,29 @@ class InspectionWorkflow(QObject):
             except Exception:  # noqa: BLE001
                 continue
         return ""
+
+    def _extract_barcodes(self, tool_results: list) -> list:
+        """从检测结果中提取条码详情列表（类型/内容/坐标/置信度）。
+
+        遍历所有工具结果，查找条码识别算子的输出 data["barcodes"]。
+
+        Args:
+            tool_results: 工具检测结果列表
+
+        Returns:
+            list: 条码详情列表，每个元素含 type/data/confidence/bbox
+        """
+        if not tool_results:
+            return []
+        for r in tool_results:
+            try:
+                data = getattr(r, "data", None) or {}
+                barcodes = data.get("barcodes", [])
+                if barcodes:
+                    return list(barcodes)
+            except Exception:  # noqa: BLE001
+                continue
+        return []
 
     def _add_to_stitch(self, result: PositionResult, pos: dict):
         """将单个点位标注图按行列网格拼入整体图，并发射刷新信号。

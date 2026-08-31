@@ -300,6 +300,28 @@ class SMCSHDLL:
         dll.MSetting_GetSCurveSet.restype = c_int32
         dll.MSetting_GetSCurveSet.argtypes = [SMCHANDLE, c_uint8]
 
+        # ---- 回零参数设置函数（MSetting_* 系列，与官方一致）----
+        # int32 MSetting_SetZeroSpeed(SMCHANDLE, uint8, int32)  -> 回零低速
+        dll.MSetting_SetZeroSpeed.restype = c_int32
+        dll.MSetting_SetZeroSpeed.argtypes = [SMCHANDLE, c_uint8, c_int32]
+        # int32 MSetting_GetZeroSpeed(SMCHANDLE, uint8)  -> 直接返回回零低速
+        dll.MSetting_GetZeroSpeed.restype = c_int32
+        dll.MSetting_GetZeroSpeed.argtypes = [SMCHANDLE, c_uint8]
+
+        # int32 MSetting_SetZeroDir(SMCHANDLE, uint8, int32)  -> 回零方向
+        dll.MSetting_SetZeroDir.restype = c_int32
+        dll.MSetting_SetZeroDir.argtypes = [SMCHANDLE, c_uint8, c_int32]
+        # int32 MSetting_GetZeroDir(SMCHANDLE, uint8)  -> 直接返回回零方向
+        dll.MSetting_GetZeroDir.restype = c_int32
+        dll.MSetting_GetZeroDir.argtypes = [SMCHANDLE, c_uint8]
+
+        # int32 MSetting_SetZeroMode(SMCHANDLE, uint8, int32)  -> 回零模式
+        dll.MSetting_SetZeroMode.restype = c_int32
+        dll.MSetting_SetZeroMode.argtypes = [SMCHANDLE, c_uint8, c_int32]
+        # int32 MSetting_GetZeroMode(SMCHANDLE, uint8)  -> 直接返回回零模式
+        dll.MSetting_GetZeroMode.restype = c_int32
+        dll.MSetting_GetZeroMode.argtypes = [SMCHANDLE, c_uint8]
+
         # ---- 点位运动函数（Motion_Pmove_* 系列，与官方一致）----
         # int32 Motion_Pmove_Enter(SMCHANDLE, uint8)
         dll.Motion_Pmove_Enter.restype = c_int32
@@ -528,6 +550,30 @@ class SMCSHDLL:
     def get_s_curve(self, handle, iaxis: int) -> int:
         """读取 S 曲线（MSetting_GetSCurveSet），直接返回 S 曲线值。"""
         return self._dll.MSetting_GetSCurveSet(handle, c_uint8(iaxis))
+
+    def set_zero_speed(self, handle, iaxis: int, speed: int) -> int:
+        """设置回零低速（MSetting_SetZeroSpeed），speed 为整数。"""
+        return self._dll.MSetting_SetZeroSpeed(handle, c_uint8(iaxis), c_int32(speed))
+
+    def get_zero_speed(self, handle, iaxis: int) -> int:
+        """读取回零低速（MSetting_GetZeroSpeed），直接返回速度值。"""
+        return self._dll.MSetting_GetZeroSpeed(handle, c_uint8(iaxis))
+
+    def set_zero_dir(self, handle, iaxis: int, direction: int) -> int:
+        """设置回零方向（MSetting_SetZeroDir），direction 为整数。"""
+        return self._dll.MSetting_SetZeroDir(handle, c_uint8(iaxis), c_int32(direction))
+
+    def get_zero_dir(self, handle, iaxis: int) -> int:
+        """读取回零方向（MSetting_GetZeroDir），直接返回方向值。"""
+        return self._dll.MSetting_GetZeroDir(handle, c_uint8(iaxis))
+
+    def set_zero_mode(self, handle, iaxis: int, mode: int) -> int:
+        """设置回零模式（MSetting_SetZeroMode），mode 为整数。"""
+        return self._dll.MSetting_SetZeroMode(handle, c_uint8(iaxis), c_int32(mode))
+
+    def get_zero_mode(self, handle, iaxis: int) -> int:
+        """读取回零模式（MSetting_GetZeroMode），直接返回模式值。"""
+        return self._dll.MSetting_GetZeroMode(handle, c_uint8(iaxis))
 
     # ------------------------------------------------------------------
     # 对外：点位运动函数（Motion_Pmove_* 系列，与官方一致）

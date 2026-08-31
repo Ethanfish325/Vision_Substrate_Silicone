@@ -6,19 +6,19 @@
       "params": {
         "regions": [
           {
-            "name": "QR",
-            "x": 1088,
-            "y": 368,
-            "width": 467,
-            "height": 563,
+            "name": "COLOR",
+            "x": 213,
+            "y": 1290,
+            "width": 372,
+            "height": 371,
             "enabled": true
           },
           {
-            "name": "label2",
-            "x": 273,
-            "y": 486,
-            "width": 629,
-            "height": 631,
+            "name": "QR",
+            "x": 1076,
+            "y": 0,
+            "width": 428,
+            "height": 640,
             "enabled": true
           }
         ],
@@ -28,35 +28,38 @@
       "judge_rule": null
     },
     {
-      "tool_type": "TemplateMatch",
+      "tool_type": "QRCodeRecognize",
       "params": {
-        "mode": "standard",
-        "method": "TM_CCOEFF_NORMED",
-        "threshold": 0.5,
-        "template_path": "C:/Users/fyx/Desktop/1.jpg",
-        "template_data": null,
-        "angle_start": -30,
-        "angle_end": 30,
-        "angle_step": 5,
-        "feature_mode": "sift",
-        "min_matches": 10,
-        "nms_distance": 20,
-        "use_mask": false,
-        "mask_path": "",
-        "scale_min": 0.5,
-        "scale_max": 2.0,
-        "scale_step": 0.1,
+        "require_pass": true,
+        "expected_prefix": "",
+        "enable_1d": true,
+        "barcode_formats": [
+          "CODE_128",
+          "CODE_39",
+          "EAN_13",
+          "UPC_A"
+        ],
         "_input_source": "region:label2"
       },
       "enabled": true,
       "judge_rule": null
     },
     {
-      "tool_type": "QRCodeRecognize",
+      "tool_type": "ColorRecognition",
       "params": {
-        "require_pass": true,
-        "expected_prefix": "",
-        "_input_source": "region:QR"
+        "h_min": 0,
+        "s_min": 0,
+        "v_min": 0,
+        "h_max": 180,
+        "s_max": 255,
+        "v_max": 50,
+        "color_name": "黑色",
+        "min_area": 100,
+        "pass_min": 0,
+        "pass_max": 100,
+        "color_space": "HSV",
+        "analyze_regions": false,
+        "_input_source": "region:COLOR"
       },
       "enabled": true,
       "judge_rule": null

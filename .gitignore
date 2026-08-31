@@ -46,3 +46,9 @@ generate_report.py
 template_match_result.jpg
 _stitch_test.txt
 _test_*.py
+
+# Debug output directories
+_debug_roi/
+
+# Accidental empty file created by PowerShell redirect
+$null

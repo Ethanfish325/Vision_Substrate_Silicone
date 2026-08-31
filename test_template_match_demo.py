@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 
 # 模板路径（与 PCBA.json 方案一致）
-TEMPLATE_PATH = "C:/Users/fyx/Desktop/1.jpg"
+TEMPLATE_PATH = "C:/Users/fyx/Desktop/2026-08-31 085456.jpg"
 # 若相机不可用，可指定本地图像测试（设为 None 则用相机）
 IMAGE_PATH = None  # 例如 "C:/Users/fyx/Desktop/current.jpg"
 

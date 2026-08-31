@@ -86,15 +86,29 @@ class VisionTool(ABC):
                 # 从 current_image 裁剪 ROI 区域，保留上游预处理结果
                 # 裁剪坐标不能超出图像边界
                 img_h, img_w = context.current_image.shape[:2]
+                # 若 ROI 坐标明显超出当前图像范围（说明当前图像是已裁剪的局部图，
+                # 而 ROI 坐标是针对完整相机图设计的），则回退到处理整张图像，
+                # 避免裁剪出无效窄条导致识别失败。
+                if x >= img_w or y >= img_h:
+                    print(f"[DEBUG][{type(self).__name__}] ROI {region_name}({x},{y},{w},{h}) 超出图像({img_w}x{img_h})，回退整图")
+                    return context.current_image.copy()
                 x = max(0, min(x, img_w - 1))
                 y = max(0, min(y, img_h - 1))
                 w = min(w, img_w - x)
                 h = min(h, img_h - y)
-                if w > 0 and h > 0:
-                    return context.current_image[y:y+h, x:x+w].copy()
-                else:
+                # 裁剪区域过小（相对原始 ROI 明显缩小，说明 ROI 与图像尺寸不匹配）
+                # 也回退到整张图像
+                if w <= 0 or h <= 0:
+                    print(f"[DEBUG][{type(self).__name__}] ROI {region_name} 裁剪后无效({w}x{h})，回退整图")
                     return context.current_image.copy()
+                if w < max(1, int(context.regions[region_name][2] * 0.1)) or \
+                   h < max(1, int(context.regions[region_name][3] * 0.1)):
+                    print(f"[DEBUG][{type(self).__name__}] ROI {region_name} 裁剪后过小({w}x{h})，回退整图")
+                    return context.current_image.copy()
+                print(f"[DEBUG][{type(self).__name__}] ROI {region_name}({x},{y},{w},{h}) 从图像({img_w}x{img_h})裁剪")
+                return context.current_image[y:y+h, x:x+w].copy()
             else:
+                print(f"[DEBUG][{type(self).__name__}] ROI {region_name} 不在 regions 中，使用整图")
                 return context.current_image.copy()
         else:
             return context.current_image.copy()

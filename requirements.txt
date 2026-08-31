@@ -3,11 +3,11 @@ PyQt5>=5.15.0
 opencv-python>=4.5.0
 numpy>=1.21.0
 pyserial>=3.5
+pyzbar>=0.1.9
 
 # 大恒 GalaxySDK（gxipy 包已内置于项目 gxipy/ 目录）
 # 依赖 GxIAPI.dll + DxImageProc.dll，需放置在项目根目录或系统 PATH 中
 # DLL 来源: C:\Program Files\Daheng Imaging\GalaxySDK\APIDll\Win64\
 
 # 可选扩展（后续添加）
-# pyzbar>=0.1.9        # 二维码/条形码识别
 # pytesseract>=0.3.10  # OCR文字识别
