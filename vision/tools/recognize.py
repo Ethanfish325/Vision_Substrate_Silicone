@@ -215,6 +215,27 @@ class ColorRecognition(VisionTool):
             message=f"颜色区域占比={area_ratio:.1f}% ({color_space})"
         )
 
+    def _refresh_color_lib_combo(self):
+        """刷新颜色库下拉列表（取色后调用，使新颜色出现在下拉中）。"""
+        combo = getattr(self, "_color_lib_combo", None)
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("-- 选择颜色库 --", None)
+        for m in self._color_library.get_all():
+            combo.addItem(f"[{m.source}] {m.name}", m.to_dict())
+        # 若当前已有 color_model，选中对应项
+        current = self.params.get("color_model")
+        if current:
+            name = current.get("name")
+            for i in range(combo.count()):
+                data = combo.itemData(i)
+                if data and data.get("name") == name:
+                    combo.setCurrentIndex(i)
+                    break
+        combo.blockSignals(False)
+
     def get_param_widgets(self, parent):
         from PyQt5.QtWidgets import (QComboBox, QSpinBox, QDoubleSpinBox,
                                       QHBoxLayout, QWidget, QLabel, QSlider, QCheckBox)
@@ -239,9 +260,8 @@ class ColorRecognition(VisionTool):
         if self._color_library is None:
             self._color_library = ColorLibrary()
         lib_combo = QComboBox(parent)
-        lib_combo.addItem("-- 选择颜色库 --", None)
-        for m in self._color_library.get_all():
-            lib_combo.addItem(f"[{m.source}] {m.name}", m.to_dict())
+        self._color_lib_combo = lib_combo  # 保存引用，供取色后刷新
+        self._refresh_color_lib_combo()
 
         def on_lib_changed(idx):
             data = lib_combo.itemData(idx)

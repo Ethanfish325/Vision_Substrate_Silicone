@@ -7,10 +7,10 @@
         "regions": [
           {
             "name": "COLOR",
-            "x": 213,
-            "y": 1290,
-            "width": 372,
-            "height": 371,
+            "x": 189,
+            "y": 1302,
+            "width": 400,
+            "height": 400,
             "enabled": true
           },
           {
@@ -39,7 +39,7 @@
           "EAN_13",
           "UPC_A"
         ],
-        "_input_source": "region:label2"
+        "_input_source": "region:QR"
       },
       "enabled": true,
       "judge_rule": null
@@ -53,12 +53,36 @@
         "h_max": 180,
         "s_max": 255,
         "v_max": 50,
-        "color_name": "黑色",
+        "color_name": "自定义颜色",
         "min_area": 100,
         "pass_min": 0,
         "pass_max": 100,
         "color_space": "HSV",
         "analyze_regions": false,
+        "color_model": {
+          "name": "自定义颜色",
+          "color_space": "HSV",
+          "center": [
+            109,
+            49,
+            231
+          ],
+          "match_mode": "range",
+          "tolerance": [
+            5,
+            20,
+            20
+          ],
+          "distance_threshold": 30.0,
+          "cluster_centers": [],
+          "normalize_illumination": false,
+          "adaptive_threshold": false,
+          "source": "custom"
+        },
+        "match_mode": "range",
+        "distance_threshold": 30.0,
+        "normalize_illumination": false,
+        "adaptive_threshold": false,
         "_input_source": "region:COLOR"
       },
       "enabled": true,

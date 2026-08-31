@@ -324,7 +324,7 @@ class ParamConfigDialog(QDialog):
         self._update_preview()
 
     def _on_color_picked(self, model):
-        """取色完成：将 ColorModel 写入工具参数并触发预览。"""
+        """取色完成：将 ColorModel 写入工具参数，刷新颜色库并显示匹配预览。"""
         try:
             from vision.color.color_model import ColorModel
             if not isinstance(model, ColorModel):
@@ -334,8 +334,18 @@ class ParamConfigDialog(QDialog):
             # 同步更新旧参数（便于参数面板显示）
             self.tool.params["color_name"] = model.name
             self.tool.params["color_space"] = model.color_space
-            # 触发预览
-            self._update_preview()
+            self.tool.params["match_mode"] = model.match_mode
+            self.tool.params["distance_threshold"] = model.distance_threshold
+            # 刷新颜色库下拉，使新颜色出现在列表中
+            if hasattr(self.tool, "_refresh_color_lib_combo"):
+                self.tool._refresh_color_lib_combo()
+            # 自动退出取色模式，显示匹配预览
+            if self._color_picking:
+                self._exit_color_pick()
+            else:
+                self._update_preview()
+            # 视觉反馈：提示已取色
+            self.setWindowTitle(f"参数配置 - {self.tool.display_name}（已取色: {model.name}）")
         except Exception as e:  # noqa: BLE001
             print(f"[ParamConfigDialog] 取色写入参数失败: {e}")
 
