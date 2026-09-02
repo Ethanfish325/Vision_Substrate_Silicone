@@ -381,9 +381,12 @@ class SMCSHDLL:
         dll.Motion_ImdStop.restype = c_int32
         dll.Motion_ImdStop.argtypes = [SMCHANDLE, c_uint8]
 
-        # int32 Motion_CheckDown(SMCHANDLE, uint8, uint8*)
+        # 注意：Motion_CheckDown 与 Motion_Home_IfHoming 均为"直接返回值"类型
+        # （与 Motion_Get* 系列一致），而非"返回错误码 + 指针输出"。
+        # 经 32 位 Python 实测确认：传入指针参数时指针不会被写入，返回值即状态值。
+        # int32 Motion_CheckDown(SMCHANDLE, uint8)  -> 直接返回是否停止(0=否,1=是)
         dll.Motion_CheckDown.restype = c_int32
-        dll.Motion_CheckDown.argtypes = [SMCHANDLE, c_uint8, POINTER(c_uint8)]
+        dll.Motion_CheckDown.argtypes = [SMCHANDLE, c_uint8]
 
         # 注意：Motion_Get* 系列直接返回参数值（非错误码），签名只有 (handle, axis)
         # int32 Motion_GetPulsePositon(SMCHANDLE, uint8)  -> 直接返回规划位置
@@ -414,9 +417,9 @@ class SMCSHDLL:
         dll.Motion_Home_FindOrigin.restype = c_int32
         dll.Motion_Home_FindOrigin.argtypes = [SMCHANDLE, c_uint8]
 
-        # int32 Motion_Home_IfHoming(SMCHANDLE, uint8, uint8*)
+        # int32 Motion_Home_IfHoming(SMCHANDLE, uint8)  -> 直接返回是否回零中(0=否,1=是)
         dll.Motion_Home_IfHoming.restype = c_int32
-        dll.Motion_Home_IfHoming.argtypes = [SMCHANDLE, c_uint8, POINTER(c_uint8)]
+        dll.Motion_Home_IfHoming.argtypes = [SMCHANDLE, c_uint8]
 
         # 读取输入端口(DI) / 设置输出端口(DO) —— 容错绑定，尝试多个候选函数名
         # 不同版本的 smcsh_mbs.dll 函数命名可能不同（Motion_* / SMC_* 前缀）
@@ -648,11 +651,9 @@ class SMCSHDLL:
         """立即停止（Motion_ImdStop）。"""
         return self._dll.Motion_ImdStop(handle, c_uint8(iaxis))
 
-    def check_down(self, handle, iaxis: int) -> tuple:
-        """检查轴是否停止（Motion_CheckDown）。返回 (错误码, 是否停止)。"""
-        down = c_uint8()
-        err = self._dll.Motion_CheckDown(handle, c_uint8(iaxis), ctypes.byref(down))
-        return err, bool(down.value)
+    def check_down(self, handle, iaxis: int) -> int:
+        """检查轴是否停止（Motion_CheckDown），直接返回是否停止(0=否,1=是)。"""
+        return self._dll.Motion_CheckDown(handle, c_uint8(iaxis))
 
     def get_pulse_position(self, handle, iaxis: int) -> int:
         """读取当前坐标（脉冲）（Motion_GetPulsePositon），直接返回位置。"""
@@ -682,11 +683,9 @@ class SMCSHDLL:
         """回零运动（Motion_Home_FindOrigin）。"""
         return self._dll.Motion_Home_FindOrigin(handle, c_uint8(iaxis))
 
-    def home_if_homing(self, handle, iaxis: int) -> tuple:
-        """检查是否回零中（Motion_Home_IfHoming）。返回 (错误码, 是否回零中)。"""
-        homing = c_uint8()
-        err = self._dll.Motion_Home_IfHoming(handle, c_uint8(iaxis), ctypes.byref(homing))
-        return err, bool(homing.value)
+    def home_if_homing(self, handle, iaxis: int) -> int:
+        """检查是否回零中（Motion_Home_IfHoming），直接返回是否回零中(0=否,1=是)。"""
+        return self._dll.Motion_Home_IfHoming(handle, c_uint8(iaxis))
 
     def get_in_port(self, handle, port: int) -> tuple:
         """读取单个输入端口（DI）状态。

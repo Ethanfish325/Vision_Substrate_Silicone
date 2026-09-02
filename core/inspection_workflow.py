@@ -2,7 +2,7 @@
 """
 自动化检测工作流模块
 =================
-实现由手动触发（或后续 SMC 轴控制触发）的多位置自动化检测工作流。
+实现由  SMC 轴控制触发的多位置自动化检测工作流。
 
 注意：本版本已移除 NMC 运动控制卡（轴控制）相关逻辑，仅保留：
     - 串口通信（一维码扫码）
@@ -14,6 +14,14 @@
     IDLE -> WAITING -> SCANNING -> CAPTURING -> TESTING
     -> (循环: CAPTURING -> TESTING 直到所有位置完成)
     -> SHOW_RESULT -> MONITORING
+
+    IDLE: 空闲状态，未加载产品配置或未开始监听
+    WAITING: 等待触发（DI 上升沿或手动触发）
+    SCANNING: 扫码中（可选）
+    CAPTURING: 拍照中
+    TESTING: 检测中
+    SHOW_RESULT: 显示结果（OK/NG），等待人工确认或自动确认
+    MONITORING: 监听状态，等待下一次触发
 
 依赖:
     - CameraManager: 相机拍照
@@ -73,6 +81,8 @@ class PositionResult:
     elapsed_ms: float = 0.0            # 检测耗时
     qr_data: str = ""                  # 条码识别结果（板卡 SN）
     barcodes: list = field(default_factory=list)  # 识别到的条码详情列表
+    save_timestamp: str = ""           # 数据保存时的时间戳（用于更新 XML）
+    confirmed: bool = False            # 是否已人工确认（NG 逐点位确认用）
 
 
 # ============================================================================
@@ -203,8 +213,8 @@ class InspectionWorkflow(QObject):
 
     # ── NG 手工确认信号 ──
 
-    ng_confirm_requested = pyqtSignal(object)
-    """NG 手工确认请求信号 (List[PositionResult]) - 发射所有检测结果，等待 UI 层弹窗确认"""
+    ng_confirm_requested = pyqtSignal(int, object, int, int)
+    """NG 手工确认请求信号 (位置索引, PositionResult, 当前第几个NG, NG总数) - 逐点位确认"""
 
     ng_confirm_closed = pyqtSignal()
     """NG 确认完成信号 - 确认后发射，通知 UI 关闭弹窗"""
@@ -221,8 +231,17 @@ class InspectionWorkflow(QObject):
     takeout_confirm_requested = pyqtSignal()
     """取出确认请求信号 - 运动到结束位后发射，等待工人按下取出确认按钮"""
 
+    reset_requested = pyqtSignal()
+    """复位请求信号 - 硬件复位按钮按下时发射，通知主窗口执行自动回零"""
+
+    home_completed = pyqtSignal()
+    """回零完成信号 - 主窗口回零完成后发射，通知工作流继续执行（如再次跑到起始位）"""
+
     motion_state_changed = pyqtSignal(str)
     """运动状态变化信号 (描述文本)"""
+
+    log_message = pyqtSignal(str)
+    """执行日志信号 (文本) - 工作流核心步骤日志，供 UI 执行日志框显示"""
 
     def __init__(self,
                  camera_mgr=None, vision_engine=None,
@@ -249,6 +268,8 @@ class InspectionWorkflow(QObject):
         # 状态
         self._state = self.State.IDLE
         self._running = False
+        # DI 轮询是否运行（与 _running 解耦：停止后仍可监听复位按钮）
+        self._di_polling = False
 
         # 自动确认模式（自动测试用）：NG 直接判 NG，不弹窗人工确认
         self._auto_confirm = False
@@ -261,6 +282,10 @@ class InspectionWorkflow(QObject):
         # 当前执行状态
         self._current_pos_index = 0
         self._results: List[PositionResult] = []
+
+        # NG 逐点位确认状态
+        self._pending_ng_confirm: List[int] = []  # 待确认的 NG 点位索引列表
+        self._current_confirm_index = 0           # 当前确认到第几个 NG 点位
 
         # 统计
         self._trigger_count = 0
@@ -297,6 +322,14 @@ class InspectionWorkflow(QObject):
         self._motion_timeout_ms = 10000  # 运动超时
         self._motion_start_time = 0.0
         self._takeout_pending = False    # 是否等待取出确认
+        # 测试结束后是否自动回零再回起始位（回零完成后再次跑到起始位等待下次测试）
+        self._auto_home_after_test = False
+        # 取出确认方式（由产品方案配置）："auto"=自动(取出传感器) / "manual"=手动(取出按键)
+        self._takeout_mode = "manual"
+        # 取出确认后延时回起始位的定时器（自动判定 2s，手动判定直接回）
+        self._takeout_delay_timer = QTimer(self)
+        self._takeout_delay_timer.setSingleShot(True)
+        self._takeout_delay_timer.timeout.connect(self._on_takeout_delay_elapsed)
 
         # ── DI 触发相关 ──
         self._di_bit = 0                 # 触发用 DI 输入位（1-based，IN2=2）
@@ -423,6 +456,15 @@ class InspectionWorkflow(QObject):
         self._io_prev_states = {}
         self._io_ports = {}
 
+        # 读取取出确认方式（由产品方案配置）
+        #   "auto"  = 自动判定：以取出传感器(unload_sensor)为准，拿出即取出，等待2s回起始位
+        #   "manual" = 手动判定：以取出按键(unload_btn)为准，按下即取出，直接回起始位
+        self._takeout_mode = str(product_config.get("takeout_mode", "manual")).lower()
+        if self._takeout_mode not in ("auto", "manual"):
+            log_warning(f"未知取出确认方式: {self._takeout_mode}，使用默认 manual")
+            self._takeout_mode = "manual"
+        log_info(f"取出确认方式: {'自动(取出传感器)' if self._takeout_mode == 'auto' else '手动(取出按键)'}")
+
         # 输入按钮（DI）→ 端口号（0-based）
         input_buttons = {
             "start": self.start_inspection,
@@ -433,11 +475,13 @@ class InspectionWorkflow(QObject):
             "unload_sensor": self._on_unload_sensor,
             "unload_btn": self._on_unload_btn,
         }
+        # 根据配置读取各输入按钮的端口号，并绑定对应动作
         for name, action in input_buttons.items():
             in_num = io.get(name)
             if in_num:
                 port = max(0, int(in_num) - 1)  # 1-based → 0-based
                 self._io_ports[name] = port
+                # 初始化上一次状态为 False（低电平），并绑定动作回调
                 self._io_prev_states[name] = False
                 self._io_actions[name] = action
 
@@ -480,18 +524,24 @@ class InspectionWorkflow(QObject):
 
     def start_monitoring(self):
         """开始监听（等待手动触发）"""
+
+        # 若已在运行中，则不重复启动
         if self._running:
             log_warning("工作流已在运行中")
             return
 
+        # 检查是否已加载产品配置
         if self._product_config is None:
             self.error_occurred.emit("未加载产品配置")
             return
 
+        # 工作流设置为运行中，等待按下按键触发
         self._running = True
+        self._di_polling = True
         self._trigger_count = 0
         self._ok_count = 0
         self._ng_count = 0
+
 
         self._set_state(self.State.MONITORING)
         log_info("开始监听（等待手动触发）")
@@ -521,11 +571,16 @@ class InspectionWorkflow(QObject):
 
         按下 STOP 后：停止所有轴、检测线程、定时器，但保持 DI 轮询运行，
         以便能继续检测复位按钮。状态进入 STOPPED，等待复位回到监听态。
+        _running 置为 False（表示不再运行/监听，允许重新加载产品），
+        但 _di_polling 保持 True，DI 轮询继续运行以监听复位按钮。
         """
         self._start_delay_timer.stop()
         self._scan_timer.stop()
         self._motion_poll_timer.stop()
-        # 不停止 DI 轮询，保持 _running=True，继续监听 IO（等待复位）
+        self._takeout_delay_timer.stop()
+        # 停止运行标志（允许重新加载产品），但保持 DI 轮询监听复位按钮
+        self._running = False
+        self._di_polling = True
 
         # 停止检测工作线程（若正在拍照/检测）
         self._stop_worker()
@@ -560,8 +615,10 @@ class InspectionWorkflow(QObject):
         self._start_delay_timer.stop()
         self._scan_timer.stop()
         self._di_poll_timer.stop()
+        self._takeout_delay_timer.stop()
         self._motion_poll_timer.stop()
         self._running = False
+        self._di_polling = False
         # 停止检测工作线程
         self._stop_worker()
         # 停止所有轴运动
@@ -576,7 +633,7 @@ class InspectionWorkflow(QObject):
 
     def _on_di_poll(self):
         """DI 轮询：检测各输入按钮的上升沿（0→1），执行对应动作。"""
-        if not self._running:
+        if not self._di_polling:
             self._di_poll_timer.stop()
             return
         if self._controller is None or not self._controller.is_connected:
@@ -586,7 +643,7 @@ class InspectionWorkflow(QObject):
         # 轮询所有输入按钮
         for name, port in self._io_ports.items():
             try:
-                current = self._controller.read_in_port(port)
+                current = self._controller.read_in_port(port)  # 读取当前状态
             except Exception as e:  # noqa: BLE001
                 log_warning(f"读取 IO [{name}] 失败: {e}")
                 continue
@@ -594,6 +651,7 @@ class InspectionWorkflow(QObject):
             prev = self._io_prev_states.get(name, False)
             # 检测上升沿（从低到高）
             if current and not prev:
+                # 检测到按钮按下，执行对应动作，action 是一个回调函数
                 action = self._io_actions.get(name)
                 if action:
                     log_info(f"检测到按钮触发: {name} (IN{port + 1})")
@@ -619,14 +677,40 @@ class InspectionWorkflow(QObject):
     # ── 下料相关 ──
 
     def _on_unload_sensor(self):
-        """下料感应信号触发。"""
-        log_info("下料感应信号触发")
-        # TODO: 根据实际下料流程实现
+        """取出传感器触发（自动判定取出确认）。
+
+        仅在"已到结束位等待取出"（_takeout_pending=True）且取出方式为自动时生效。
+        传感器检测到工件被拿出后，等待 2s 回起始位。
+        """
+        if not self._takeout_pending:
+            return
+        if self._takeout_mode != "auto":
+            return
+        log_info("取出传感器检测到工件已取出，等待 2s 回起始位")
+        self.log_message.emit("取出传感器检测到工件已取出，等待 2s 回起始位")
+        self._takeout_pending = False
+        self._takeout_delay_timer.start(2000)
 
     def _on_unload_btn(self):
-        """下料按钮触发。"""
-        log_info("下料按钮触发")
-        # TODO: 根据实际下料流程实现
+        """取出按键触发（手动判定取出确认）。
+
+        仅在"已到结束位等待取出"（_takeout_pending=True）且取出方式为手动时生效。
+        按下取出按键后直接回起始位。
+        """
+        if not self._takeout_pending:
+            return
+        if self._takeout_mode != "manual":
+            return
+        log_info("取出按键已按下，返回起始位")
+        self.log_message.emit("取出按键已按下，返回起始位")
+        self._takeout_pending = False
+        self._move_to_start(callback=self._on_returned_to_start)
+
+    def _on_takeout_delay_elapsed(self):
+        """取出确认延时结束（自动判定 2s 后） - 返回起始位。"""
+        log_info("取出确认延时结束，返回起始位")
+        self.log_message.emit("取出确认延时结束，返回起始位")
+        self._move_to_start(callback=self._on_returned_to_start)
 
     # ── 输出端口控制（红灯/绿灯）──
 
@@ -656,16 +740,24 @@ class InspectionWorkflow(QObject):
         """复位：回到初始态，等待重新测试。
 
         - 从 ERROR 状态：复位回 IDLE
-        - 从 STOPPED 状态（按下 STOP 后）：回到 MONITORING，等待重新测试
+        - 从 STOPPED 状态（按下 STOP 后）：复位回 IDLE，等待重新启动
+        复位后回到 IDLE（_running=False），允许重新加载产品方案；
+        用户需重新点击「启动」才开始监听。
         """
         if self._state == self.State.ERROR:
             self._running = False
+            self._di_polling = False
             self._set_state(self.State.IDLE)
             log_info("错误已复位")
         elif self._state == self.State.STOPPED:
-            # 从停止状态回到监听状态，等待重新测试
-            self._set_state(self.State.MONITORING)
-            log_info("已复位，等待重新测试")
+            # 从停止状态复位回 IDLE，允许重新加载产品方案
+            self._running = False
+            self._di_polling = False
+            self._set_state(self.State.IDLE)
+            log_info("已复位，等待重新启动")
+
+        # 无论什么状态，复位时都发射 reset_requested 信号，通知 UI 执行自动回零
+        self.reset_requested.emit()
 
     # ── 手动触发 ──
 
@@ -676,8 +768,12 @@ class InspectionWorkflow(QObject):
         """
         self._auto_confirm = bool(enabled)
 
-    def start_inspection(self):
-        """手动触发一次检测流程（替代原 DI 触发）"""
+    def  start_inspection(self):
+        """ 触发一次检测流程，三种触发方式都通过本函数触发检测流程
+        1. 手动按下 START 按钮（IO 配置）
+        2. 鼠标点击面板的触发按钮
+        3. 自动测试中自动定时触发
+        """
         if not self._running:
             log_warning("工作流未在监听状态，无法触发")
             return
@@ -686,6 +782,7 @@ class InspectionWorkflow(QObject):
             log_warning(f"当前状态 {self._state.value} 不允许触发")
             return
 
+        # 触发计数
         self._trigger_count += 1
         self.trigger_count_changed.emit(self._trigger_count)
 
@@ -706,7 +803,9 @@ class InspectionWorkflow(QObject):
 
         # 延时后开始检测，等待工件放稳
         log_info(f"触发检测，等待 {self._config.start_delay_ms}ms 后开始...")
+        self.log_message.emit(f"触发检测 #{self._trigger_count}，等待 {self._config.start_delay_ms}ms 后开始...")
         self._set_state(self.State.WAITING)
+        # 等待默认1000ms后开始检测，避免工件放置不稳导致拍照模糊
         self._start_delay_timer.start(self._config.start_delay_ms)
 
     # ── 状态管理 ──
@@ -724,6 +823,7 @@ class InspectionWorkflow(QObject):
         # 若启用轴运动，先运动到起始位
         if self._motion_enabled and self._controller is not None:
             log_info("延时结束，运动到起始位")
+            self.log_message.emit("延时结束，运动到起始位")
             self._move_to_start(callback=self._on_reached_start)
             return
 
@@ -731,9 +831,11 @@ class InspectionWorkflow(QObject):
         barcode_cfg = self._product_config.get("barcode_scan", {})
         if barcode_cfg.get("enabled", False):
             log_info("延时结束，开始扫码")
+            self.log_message.emit("延时结束，开始扫码")
             self._start_scan()
         else:
             log_info("延时结束，开始执行检测流程")
+            self.log_message.emit("延时结束，开始执行检测流程")
             self._execute_current_position()
 
     def _on_reached_start(self):
@@ -758,6 +860,7 @@ class InspectionWorkflow(QObject):
 
         pos = positions[self._current_pos_index]
         log_info(f"检测位置 {self._current_pos_index + 1}: {pos.get('name', '')}")
+        self.log_message.emit(f"检测位置 {self._current_pos_index + 1}/{len(positions)}: {pos.get('name', '')}")
 
         # 若启用轴运动，先运动到该点位（行优先顺序由 positions 顺序保证）
         if self._motion_enabled and self._controller is not None:
@@ -772,6 +875,7 @@ class InspectionWorkflow(QObject):
     def _capture(self):
         """拍照 + 检测（在工作线程执行，避免阻塞主线程导致 DI 轮询暂停）。"""
         self._set_state(self.State.CAPTURING)
+        self.log_message.emit(f"拍照中... (位置 {self._current_pos_index + 1})")
 
         if self._camera_mgr is None:
             self._on_error("相机管理器未初始化")
@@ -817,6 +921,11 @@ class InspectionWorkflow(QObject):
     def _on_test_completed(self, passed: bool, message: str,
                            annotated: np.ndarray, raw_image: np.ndarray,
                            tool_results: list):
+
+        """回调函数处理停止状态，避免在停止后继续处理结果"""
+        if self._state == self.State.STOPPED:
+            log_info("检测完成，但工作流已停止，忽略结果")
+            return
         """检测完成回调"""
         positions = self._product_config.get("positions", [])
         pos = positions[self._current_pos_index] if self._current_pos_index < len(positions) else {"name": f"位置{self._current_pos_index + 1}"}
@@ -844,12 +953,18 @@ class InspectionWorkflow(QObject):
 
         log_info(f"位置 {self._current_pos_index + 1} [{result.name}]: {'OK' if passed else 'NG'} | {message}"
                  + (f" | SN={qr_data}" if qr_data else ""))
+        self.log_message.emit(f"位置 {self._current_pos_index + 1} [{result.name}]: "
+                              f"{'OK' if passed else 'NG'} | {message}"
+                              + (f" | SN={qr_data}" if qr_data else ""))
 
         # 发射单个位置结果信号
         self.position_result_ready.emit(self._current_pos_index, result)
 
         # 将该点位标注图拼入整体图并刷新显示
         self._add_to_stitch(result, pos)
+
+        # 立即保存该点位数据（照片 + XML），此时图像仍在内存中
+        self._save_position_data(result, pos)
 
         # 拼入拼接器后立即释放该张板卡的原始图/标注图，降低内存占用
         # （拼接器已保存缩放后的图像，结果面板已通过信号拿到图像，后续不再需要）
@@ -970,6 +1085,8 @@ class InspectionWorkflow(QObject):
     def _show_final_result(self):
         """显示最终结果"""
         self._set_state(self.State.SHOW_RESULT)
+        # 标记本次测试结束后需要自动回零再回起始位（回零完成后再次跑到起始位等待下次测试）
+        self._auto_home_after_test = True
 
         # 计算本次检测总耗时
         import time
@@ -984,8 +1101,7 @@ class InspectionWorkflow(QObject):
             all_passed = all(r.passed for r in self._results)
 
         if all_passed:
-            # OK：保存数据、更新统计并继续
-            self._save_ng_ok_data()  # 保存 OK 缩略图 + CSV 日志
+            # OK：更新统计并继续（各点位数据已在检测完成时保存）
             self._ok_count += 1
             self.ok_count_changed.emit(self._ok_count)
             # 发射最终结果信号
@@ -995,6 +1111,7 @@ class InspectionWorkflow(QObject):
             log_info(f"最终结果: OK "
                      f"(触发: {self._trigger_count}, OK: {self._ok_count}, NG: {self._ng_count})"
                      f" | 总耗时: {total_elapsed:.2f}s")
+            self.log_message.emit(f"最终结果: OK | 总耗时: {total_elapsed:.2f}s")
             # 若启用轴运动：运动到结束位，等待取出确认
             # 自动确认模式（自动测试）下：跳过取出确认，直接返回起始位
             if self._auto_confirm:
@@ -1011,25 +1128,27 @@ class InspectionWorkflow(QObject):
             # NG：若为自动确认模式（自动测试），直接判 NG，不弹窗人工确认
             if self._auto_confirm:
                 log_info(f"检测结果为 NG（自动确认模式，直接判 NG）| 总耗时: {total_elapsed:.2f}s")
+                self.log_message.emit(f"最终结果: NG | 总耗时: {total_elapsed:.2f}s")
                 self._handle_ng_auto()
             else:
-                # 发射手工确认请求信号，等待 UI 层弹窗确认
-                log_info(f"检测结果为 NG，请求手工确认... | 总耗时: {total_elapsed:.2f}s")
+                # 逐点位确认：收集所有 NG 点位，逐个弹窗让操作员确认
+                log_info(f"检测结果为 NG，开始逐点位手工确认... | 总耗时: {total_elapsed:.2f}s")
+                self.log_message.emit(f"最终结果: NG，开始逐点位手工确认 | 总耗时: {total_elapsed:.2f}s")
+                self._pending_ng_confirm = [
+                    i for i, r in enumerate(self._results) if not r.passed
+                ]
+                self._current_confirm_index = 0
                 self._set_state(self.State.WAITING_FOR_CONFIRM)  # 进入等待确认状态
-                self.ng_confirm_requested.emit(self._results)
+                self._request_next_ng_confirm()
 
     def _handle_ng_auto(self):
         """自动确认模式下的 NG 处理：直接判 NG，不弹窗人工确认。
 
-        与 confirm_ng_result(False) 逻辑一致，但不要求 WAITING_FOR_CONFIRM 状态。
+        各点位数据已在检测完成时保存，此处仅更新统计并发射信号。
         """
         self._ng_count += 1
         self.ng_count_changed.emit(self._ng_count)
         log_info("自动确认: NG")
-        try:
-            self._save_ng_error_data()
-        except Exception as e:  # noqa: BLE001
-            log_warning(f"保存 NG 错误数据失败: {e}")
         self.all_results_ready.emit(False, self._results)
         # 释放结果图像，降低内存占用
         self._release_result_images()
@@ -1041,14 +1160,28 @@ class InspectionWorkflow(QObject):
             self._set_state(self.State.MONITORING)
 
     def _on_reached_end_ok(self):
-        """OK 流程：已运动到结束位，等待工人取出确认。"""
+        """OK 流程：已运动到结束位，等待取出确认。
+
+        根据产品方案配置的取出确认方式（takeout_mode）：
+            - "auto"  = 自动判定：等待取出传感器(unload_sensor)检测到工件被拿出
+            - "manual" = 手动判定：等待取出按键(unload_btn)被按下
+        同时保留软件「取出确认」按钮（confirm_takeout）作为兜底。
+        """
         self._takeout_pending = True
-        self.motion_state_changed.emit("已到结束位，等待取出确认")
+        if self._takeout_mode == "auto":
+            self.motion_state_changed.emit("已到结束位，等待取出传感器检测")
+            self.log_message.emit("已到结束位，等待取出传感器检测（自动判定）")
+        else:
+            self.motion_state_changed.emit("已到结束位，等待按下取出按键")
+            self.log_message.emit("已到结束位，等待按下取出按键（手动判定）")
         self.takeout_confirm_requested.emit()
 
     def confirm_ng_result(self, confirmed_ok: bool):
         """
-        NG 手工确认结果回调 - 由 UI 层在弹窗确认后调用。
+        NG 逐点位确认结果回调 - 由 UI 层在弹窗确认后调用。
+
+        确认当前 NG 点位后，更新该点位最终判定与 XML，然后请求确认下一个 NG 点位；
+        所有 NG 点位确认完成后，计算最终结果并继续流程。
 
         Args:
             confirmed_ok: True 表示操作员确认为 OK，False 表示确认为 NG
@@ -1057,106 +1190,133 @@ class InspectionWorkflow(QObject):
             log_warning(f"工作流状态不是 WAITING_FOR_CONFIRM，忽略确认回调 (当前: {self._state.value})")
             return
 
-        if confirmed_ok:
-            # 操作员确认为 OK：不保存错误图片
-            self._ok_count += 1
-            self.ok_count_changed.emit(self._ok_count)
-            log_info("手工确认: OK")
-            self._save_ng_ok_data()  # 可选：保存 OK 数据
-            self.all_results_ready.emit(True, self._results)
-            # 释放结果图像，降低内存占用
-            self._release_result_images()
-        else:
-            # 操作员确认为 NG：保存所有 NG 位置的错误图片和检测数据
-            self._ng_count += 1
-            self.ng_count_changed.emit(self._ng_count)
-            log_info("手工确认: NG")
-            self._save_ng_error_data()
-            self.all_results_ready.emit(False, self._results)
-            # 释放结果图像，降低内存占用
-            self._release_result_images()
+        if self._current_confirm_index >= len(self._pending_ng_confirm):
+            log_warning("没有待确认的 NG 点位，忽略确认回调")
+            return
 
-        log_info(f"最终结果: {'OK' if confirmed_ok else 'NG'} "
-                 f"(触发: {self._trigger_count}, OK: {self._ok_count}, NG: {self._ng_count})")
+        # 当前待确认的 NG 点位
+        idx = self._pending_ng_confirm[self._current_confirm_index]
+        result = self._results[idx]
 
-        # 通知 UI 关闭 NG 确认弹窗
+        # 更新该点位最终判定
+        result.passed = confirmed_ok
+        result.confirmed = True
+        log_info(f"点位 [{result.name}] 手工确认: {'OK' if confirmed_ok else 'NG'}")
+
+        # 更新该点位 XML 判定
+        self._update_position_xml(result)
+
+        # 通知 UI 关闭当前确认弹窗
         self.ng_confirm_closed.emit()
 
-        # 运动控制：确认 OK → 运动到结束位等待取出；确认 NG → 返回起始位
-        if self._motion_enabled and self._controller is not None:
-            if confirmed_ok:
+        # 请求确认下一个 NG 点位
+        self._current_confirm_index += 1
+        self._request_next_ng_confirm()
+
+    def _request_next_ng_confirm(self):
+        """请求确认下一个 NG 点位；全部确认完成后进入最终结果处理。"""
+        if self._current_confirm_index >= len(self._pending_ng_confirm):
+            # 所有 NG 点位确认完成
+            self._finish_ng_confirm()
+            return
+
+        idx = self._pending_ng_confirm[self._current_confirm_index]
+        result = self._results[idx]
+        current = self._current_confirm_index + 1
+        total = len(self._pending_ng_confirm)
+        log_info(f"请求确认 NG 点位 {current}/{total}: [{result.name}]")
+        self.ng_confirm_requested.emit(idx, result, current, total)
+
+    def _finish_ng_confirm(self):
+        """所有 NG 点位确认完成，计算最终结果并继续流程。"""
+        # 重新计算最终结果（确认后可能改变判定）
+        all_passed = all(r.passed for r in self._results)
+
+        if all_passed:
+            self._ok_count += 1
+            self.ok_count_changed.emit(self._ok_count)
+            log_info("逐点位确认完成，最终结果: OK")
+            self.log_message.emit("逐点位确认完成，最终结果: OK")
+            self.all_results_ready.emit(True, self._results)
+            # 运动控制：OK → 运动到结束位等待取出
+            if self._motion_enabled and self._controller is not None:
                 self._move_to_end(callback=self._on_reached_end_ok)
             else:
-                self._move_to_start(callback=self._on_returned_to_start)
+                self._set_state(self.State.MONITORING)
         else:
-            self._set_state(self.State.MONITORING)
+            self._ng_count += 1
+            self.ng_count_changed.emit(self._ng_count)
+            log_info("逐点位确认完成，最终结果: NG")
+            self.log_message.emit("逐点位确认完成，最终结果: NG")
+            self.all_results_ready.emit(False, self._results)
+            # 运动控制：NG → 返回起始位
+            if self._motion_enabled and self._controller is not None:
+                self._move_to_start(callback=self._on_returned_to_start)
+            else:
+                self._set_state(self.State.MONITORING)
 
-    def _save_ng_ok_data(self):
-        """保存所有 OK 位置的检测数据（按各点位 QR SN 保存 + 生成 XML）
+        # 释放结果图像，降低内存占用
+        self._release_result_images()
+        log_info(f"最终结果: {'OK' if all_passed else 'NG'} "
+                 f"(触发: {self._trigger_count}, OK: {self._ok_count}, NG: {self._ng_count})")
 
-        目录结构:
-            data/production data/
-                YYYY-MM-DD/
-                    OK/
-                        {SN}/
-                            {SN}_{HHMMSS}_thumbnail.jpg  # 缩略图
-                            {SN}.xml                       # MES 上传用
-                        ok_log.csv
+    def _save_position_data(self, result: PositionResult, pos: dict):
+        """保存单个点位（板卡）的数据：照片 + XML。
+
+        每个点位即一块独立板卡，拥有独立 SN 号（QR 识别结果）。
+        在检测完成、图像仍在内存中时立即调用，避免图像被释放后无法保存。
+
+        Args:
+            result: 该点位的检测结果
+            pos: 该点位的配置
         """
         from core.result_storage import ResultStorage
 
         product_name = self._product_config.get("name", "未知产品") if self._product_config else "未知产品"
 
-        storage = ResultStorage()
-        for result in self._results:
-            if result.annotated is not None:
-                try:
-                    sn = result.qr_data or "NO_SN"
-                    storage.save_board_data(
-                        scheme_name=product_name,
-                        sn=sn,
-                        annotated_image=result.annotated,
-                        passed=True,
-                        save_thumbnail=True,
-                    )
-                except Exception as e:
-                    log_error(f"保存 OK 位置 [{result.name}] 数据失败: {e}")
+        image = result.annotated if result.annotated is not None else result.raw_image
+        if image is None:
+            log_warning(f"位置 [{result.name}] 无图像，跳过保存")
+            return
 
-    def _save_ng_error_data(self):
-        """保存所有 NG 位置的错误数据（按各点位 QR SN 保存 + 生成 XML）
+        try:
+            storage = ResultStorage()
+            save_info = storage.save_position_data(
+                scheme_name=product_name,
+                sn=result.qr_data or "",
+                position_name=result.name,
+                position_index=self._current_pos_index + 1,
+                annotated_image=image,
+                passed=result.passed,
+            )
+            if save_info:
+                # 记录保存时间戳，用于后续更新 XML
+                result.save_timestamp = save_info.get('timestamp', '')
+        except Exception as e:  # noqa: BLE001
+            log_error(f"保存位置 [{result.name}] 数据失败: {e}")
 
-        目录结构:
-            data/production data/
-                YYYY-MM-DD/
-                    NG/
-                        {SN}/
-                            {SN}_{HHMMSS}_result.jpg   # 标注结果图
-                            {SN}.xml                    # MES 上传用
-                        ng_log.csv
+    def _update_position_xml(self, result: PositionResult):
+        """更新某点位（SN）的 XML 判定结果（NG 手工确认后调用）。
+
+        Args:
+            result: 该点位的检测结果（含最终判定）
         """
         from core.result_storage import ResultStorage
 
-        product_name = self._product_config.get("name", "未知产品") if self._product_config else "未知产品"
-
-        storage = ResultStorage()
-        for result in self._results:
-            if not result.passed and result.annotated is not None:
-                try:
-                    sn = result.qr_data or "NO_SN"
-                    storage.save_board_data(
-                        scheme_name=product_name,
-                        sn=sn,
-                        annotated_image=result.annotated,
-                        passed=False,
-                        save_thumbnail=False,
-                    )
-                except Exception as e:
-                    log_error(f"保存 NG 位置 [{result.name}] 错误数据失败: {e}")
+        try:
+            storage = ResultStorage()
+            storage.update_position_result(
+                sn=result.qr_data or "",
+                passed=result.passed,
+                timestamp=result.save_timestamp,
+            )
+        except Exception as e:  # noqa: BLE001
+            log_error(f"更新位置 [{result.name}] XML 判定失败: {e}")
 
     def _release_result_images(self):
         """释放所有检测结果中的原始图/标注图，降低内存占用。
 
-        数据已通过 _save_ng_ok_data / _save_ng_error_data 保存到磁盘，
+        各点位数据已在检测完成时通过 _save_position_data 保存到磁盘，
         结果面板仅使用 name/passed/message/elapsed_ms 等元数据，不再需要图像。
         释放后仅保留 SN、结果等轻量数据，避免多张高分辨率图长期占用内存。
         """
@@ -1208,6 +1368,7 @@ class InspectionWorkflow(QObject):
             self._motion_callback = callback
             self._motion_start_time = time.time()
             self.motion_state_changed.emit(f"运动到 ({x}, {y})")
+            self.log_message.emit(f"运动到 ({x}, {y})")
 
             # 设置双轴运动参数（start_speed 用较小值，max_speed 用 v_max）
             motion = self._product_config.get("motion", {}) or {}
@@ -1312,9 +1473,32 @@ class InspectionWorkflow(QObject):
         self._move_to_start(callback=self._on_returned_to_start)
 
     def _on_returned_to_start(self):
-        """已返回起始位，等待下次启动。"""
+        """已返回起始位。
+
+        若启用了"测试结束后自动回零"（_auto_home_after_test），
+        则发射 reset_requested 触发主窗口回零，回零完成后由
+        on_home_completed 再次跑到起始位等待下次测试；
+        否则直接进入 MONITORING 等待下次触发。
+        """
         self.motion_state_changed.emit("已返回起始位")
-        self._set_state(self.State.MONITORING)
+        if self._auto_home_after_test:
+            log_info("测试结束，返回起始位，开始自动回零")
+            self.log_message.emit("测试结束，返回起始位，开始自动回零")
+            self.reset_requested.emit()
+        else:
+            self._set_state(self.State.MONITORING)
+
+    def on_home_completed(self):
+        """回零完成回调（由主窗口在回零完成后调用）。
+
+        若设置了"测试结束后自动回零"，回零完成后再次跑到起始位等待下次测试。
+        """
+        if not self._auto_home_after_test:
+            return
+        self._auto_home_after_test = False
+        log_info("回零完成，再次运动到起始位等待下次测试")
+        self.log_message.emit("回零完成，再次运动到起始位等待下次测试")
+        self._move_to_start(callback=self._on_returned_to_start)
 
     # ── 错误处理 ──
 
@@ -1383,14 +1567,17 @@ class InspectionWorkflow(QObject):
             count = self._serial_comm.send_hex(command)
             if count > 0:
                 log_info(f"已发送扫描命令: {command} ({count} 字节)")
+                self.log_message.emit("扫码中...")
                 # 启动超时定时器
                 self._scan_timer.start(timeout_ms)
                 log_info(f"等待扫码返回 (超时: {timeout_ms}ms)...")
             else:
                 log_error("发送扫描命令失败")
+                self.log_message.emit("发送扫描命令失败")
                 self._on_barcode_failed()
         else:
             log_error("串口未打开，无法扫码")
+            self.log_message.emit("串口未打开，无法扫码")
             self._on_barcode_failed()
 
     def _on_barcode_data_received(self, data: bytes):
@@ -1424,25 +1611,30 @@ class InspectionWorkflow(QObject):
                     and barcode.upper() != "NG"):
                 self._barcode_data = barcode
                 log_info(f"扫码成功: {barcode}")
+                self.log_message.emit(f"扫码成功: {barcode}")
                 # 扫码成功，开始执行检测位置
                 self._current_pos_index = 0
                 self._execute_current_position()
             else:
                 log_warning(f"扫码失败: 返回={raw_text!r} (过滤后={barcode!r})")
+                self.log_message.emit(f"扫码失败: {barcode!r}")
                 self._on_barcode_failed()
         except Exception as e:
             log_error(f"解析一维码失败: {e}")
+            self.log_message.emit(f"解析一维码失败: {e}")
             self._on_barcode_failed()
 
     def _on_scan_timeout(self):
         """扫码超时 - 未收到扫描头返回数据"""
         log_error("扫码超时：未收到一维码数据")
+        self.log_message.emit("扫码超时：未收到一维码数据")
         self._on_barcode_failed()
 
     def _on_barcode_failed(self):
         """扫码失败处理 - 发射扫码失败信号，不保存错误图片"""
         self._barcode_data = None
         log_info("扫码失败，等待重新触发")
+        self.log_message.emit("扫码失败，等待重新触发")
 
         # 更新 NG 计数
         self._ng_count += 1

@@ -391,17 +391,15 @@ class Controller:
         """
         检查轴是否停止（Motion_CheckDown）。
 
+        注意：Motion_CheckDown 为"直接返回值"类型（0=未停止, 1=已停止），
+        非"返回错误码 + 指针输出"类型。
+
         :param iaxis: 轴号（0-3）
         :return: 是否已停止
-        :raises ControllerError: 未连接或调用失败时抛出
+        :raises ControllerError: 未连接时抛出
         """
         self._check_connected()
-        err, down = self._dll.check_down(self._handle, iaxis)
-        if err != ERR_NOERR:
-            raise ControllerError(
-                f"检查w轴停止失败 (轴{iaxis}): {self._dll.get_errcode_description(err)}"
-            )
-        return down
+        return bool(self._dll.check_down(self._handle, iaxis))
 
     def decel_stop(self, iaxis: int) -> None:
         """减速停止（Motion_DeclStop）。"""
@@ -521,16 +519,15 @@ class Controller:
         """
         检查是否回零中（Motion_Home_IfHoming）。
 
+        注意：Motion_Home_IfHoming 为"直接返回值"类型（0=不在回零, 1=回零中），
+        非"返回错误码 + 指针输出"类型。
+
         :param iaxis: 轴号（0-3）
         :return: 是否回零中
+        :raises ControllerError: 未连接时抛出
         """
         self._check_connected()
-        err, homing = self._dll.home_if_homing(self._handle, iaxis)
-        if err != ERR_NOERR:
-            raise ControllerError(
-                f"检查回零状态失败 (轴{iaxis}): {self._dll.get_errcode_description(err)}"
-            )
-        return homing
+        return bool(self._dll.home_if_homing(self._handle, iaxis))
 
     # ------------------------------------------------------------------
     # 兼容方法（供旧代码 / demo 使用）

@@ -26,6 +26,7 @@ data/errors/
 data/logs/
 data/config.json
 data/production data/
+data/auto_test_results.csv
 
 # Model - deleted sample directories (no longer exist)
 model/deep/

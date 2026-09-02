@@ -7,18 +7,18 @@
         "regions": [
           {
             "name": "COLOR",
-            "x": 213,
-            "y": 1354,
-            "width": 450,
-            "height": 450,
+            "x": 205,
+            "y": 1401,
+            "width": 400,
+            "height": 400,
             "enabled": true
           },
           {
             "name": "QR",
-            "x": 1179,
-            "y": 79,
-            "width": 290,
-            "height": 600,
+            "x": 1072,
+            "y": 0,
+            "width": 500,
+            "height": 776,
             "enabled": true
           }
         ],
@@ -56,7 +56,7 @@
         "color_name": "自定义颜色",
         "min_area": 100,
         "pass_min": 0,
-        "pass_max": 8,
+        "pass_max": 10,
         "color_space": "HSV",
         "analyze_regions": true,
         "color_model": {

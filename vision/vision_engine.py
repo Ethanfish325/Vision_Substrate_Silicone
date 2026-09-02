@@ -197,23 +197,28 @@ class VisionEngine:
         目录结构:
             data/production data/
                 YYYY-MM-DD/
-                    NG/
-                        {ID号}/
-                            {ID号}_{HHMMSS}_result.jpg  # 标注结果图
+                    {SN号}/
+                        {SN号}_{HHMMSS}_pos{序号}_{位置名}_NG.jpg  # 标注结果图
+                        {SN号}.xml                                   # MES 上传用 XML
+                    未识别到SN号/
+                        ...
 
         Args:
             scheme_name: 方案名称
             product_id: 产品ID（一维码数据）
-            annotated_image: 标注图像0
+            annotated_image: 标注图像
             custom_prefix: 自定义前缀（如一维码），用于文件夹和文件名
         """
         try:
             storage = ResultStorage()
             pid = custom_prefix or product_id
-            storage.save_ng_data(
+            storage.save_position_data(
                 scheme_name=scheme_name,
-                product_id=pid,
+                sn=pid,
+                position_name="NG",
+                position_index=1,
                 annotated_image=annotated_image,
+                passed=False,
             )
             log_info(f"NG 数据已保存 (product_id={pid})")
         except Exception as e:

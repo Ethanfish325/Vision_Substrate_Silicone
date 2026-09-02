@@ -560,6 +560,8 @@ class InspectionPanel(QWidget):
         self._workflow.stitched_image_ready.connect(self._on_stitched_image_ready)
         self._workflow.takeout_confirm_requested.connect(self._on_takeout_confirm_requested)
         self._workflow.motion_state_changed.connect(self._on_motion_state_changed)
+        # 工作流核心步骤日志 → 界面执行日志框
+        self._workflow.log_message.connect(self._append_log)
 
     def _refresh_product_list(self):
         """刷新产品列表"""
@@ -655,8 +657,10 @@ class InspectionPanel(QWidget):
         复位错误状态，并触发一次完整自动回零（安全顺序：先 Z 轴抬起，再 X/Y 轴）。
         回零过程中的防重复触发 / 急停处理由主窗口的 _start_home_sequence 负责。
         """
+        # 复位工作流错误状态，reset_error() 会清除错误标志并通知ui进行回零。
         if self._workflow:
-            self._workflow.reset_error()
+            self._workflow.reset_error() 
+
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
         self._btn_trigger.setEnabled(False)
@@ -668,9 +672,6 @@ class InspectionPanel(QWidget):
             border-radius: 3px; padding: 2px 8px;
         """)
         self._append_log("已复位，触发自动回零...")
-        self.reset_requested.emit()
-        # 触发完整自动回零（主窗口处理）
-        self.home_requested.emit()
 
     def _on_product_changed(self, product_name: str):
         """产品切换"""
@@ -755,6 +756,40 @@ class InspectionPanel(QWidget):
         # 更新日志
         self._append_log(f"状态: {name}")
 
+        # 根据工作流状态同步按钮启用/禁用状态
+        # （无论软件按钮还是硬件按键触发状态变化，按钮状态都保持一致）
+        self._sync_buttons_by_state(state)
+
+    def _sync_buttons_by_state(self, state):
+        """根据工作流状态同步按钮的启用/禁用状态。
+
+        运行中（MONITORING 及检测流程中）：启动/触发/产品选择/更新方案 禁用，停止 启用。
+        停止/空闲/错误：启动/产品选择/更新方案 启用，停止/触发 禁用。
+        """
+        running_states = (
+            InspectionWorkflow.State.MONITORING,
+            InspectionWorkflow.State.WAITING,
+            InspectionWorkflow.State.SCANNING,
+            InspectionWorkflow.State.CAPTURING,
+            InspectionWorkflow.State.TESTING,
+            InspectionWorkflow.State.SHOW_RESULT,
+            InspectionWorkflow.State.WAITING_FOR_CONFIRM,
+        )
+        if state in running_states:
+            # 运行中：启动/触发/产品选择/更新方案 禁用，停止 启用
+            self._btn_start.setEnabled(False)
+            self._btn_stop.setEnabled(True)
+            self._btn_trigger.setEnabled(True)
+            self._product_combo.setEnabled(False)
+            self._btn_reload.setEnabled(False)
+        else:
+            # 停止/空闲/错误：启动/产品选择/更新方案 启用，停止/触发 禁用
+            self._btn_start.setEnabled(True)
+            self._btn_stop.setEnabled(False)
+            self._btn_trigger.setEnabled(False)
+            self._product_combo.setEnabled(True)
+            self._btn_reload.setEnabled(True)
+
     def _on_position_result(self, index: int, result: PositionResult):
         """单个位置检测完成"""
         self._append_log(f"位置 [{result.name}]: {'OK' if result.passed else 'NG'} - {result.message}")
@@ -816,19 +851,26 @@ class InspectionPanel(QWidget):
         ng_count = total - ok_count
         self._append_log(f"最终结果: {'OK' if final_ok else 'NG'} ({ok_count}/{total} 通过)")
 
-    def _on_ng_confirm_requested(self, results):
+    def _on_ng_confirm_requested(self, idx, result, current, total):
         """
-        NG 手工确认请求 - 弹出对话框让操作员确认 OK/NG。
-        操作员可以查看所有位置的检测结果后做出最终判断。
+        NG 逐点位手工确认请求 - 弹出对话框让操作员确认当前 NG 点位 OK/NG。
+
+        每个 NG 点位单独弹一个确认框，只显示位置名称 + 检测结果 + 第几个 NG。
+        操作员通过硬件 OK/NG 按键（或软件按钮）确认该点位。
+
+        Args:
+            idx: 该点位在 results 中的索引
+            result: 该点位的检测结果（PositionResult）
+            current: 当前是第几个 NG 点位（1-based）
+            total: NG 点位总数
         """
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QFrame, QSizePolicy
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
         from PyQt5.QtCore import Qt
-        from PyQt5.QtGui import QPixmap, QImage
 
         # 构建确认对话框
         dialog = QDialog(self)
-        dialog.setWindowTitle("⚠️ NG 检测结果 - 请手工确认")
-        dialog.setMinimumSize(600, 400)
+        dialog.setWindowTitle(f"⚠️ NG 点位确认 ({current}/{total})")
+        dialog.setMinimumSize(420, 260)
         dialog.setStyleSheet("""
             QDialog { background-color: #2d2d2d; }
             QLabel { color: #d4d4d4; font-size: 13px; }
@@ -839,11 +881,11 @@ class InspectionPanel(QWidget):
         """)
 
         layout = QVBoxLayout(dialog)
-        layout.setSpacing(8)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 12, 16, 12)
 
-        # 标题
-        title_label = QLabel("⚠️ 检测结果为 NG，请确认最终判定结果")
+        # 标题（第几个 NG）
+        title_label = QLabel(f"⚠️ NG 点位 {current}/{total}，请确认最终判定")
         title_label.setAlignment(Qt.AlignCenter)
         title_label.setStyleSheet("""
             font-size: 16px; font-weight: bold; color: #EF5350;
@@ -852,83 +894,35 @@ class InspectionPanel(QWidget):
         """)
         layout.addWidget(title_label)
 
-        # 统计信息
-        total = len(results)
-        ok_count = sum(1 for r in results if r.passed)
-        ng_count = total - ok_count
-        stats_label = QLabel(f"总位置: {total}  |  OK: {ok_count}  |  NG: {ng_count}")
-        stats_label.setAlignment(Qt.AlignCenter)
-        stats_label.setStyleSheet("""
-            font-size: 14px; color: #d4d4d4; padding: 4px;
-            background-color: #252525; border: 1px solid #444;
-            border-radius: 3px;
+        # 位置名称
+        name_label = QLabel(f"📍 位置: {result.name}")
+        name_label.setAlignment(Qt.AlignCenter)
+        name_label.setStyleSheet("""
+            font-size: 18px; font-weight: bold; color: #d4d4d4;
+            padding: 6px; background-color: #252525;
+            border: 1px solid #444; border-radius: 4px;
         """)
-        layout.addWidget(stats_label)
+        layout.addWidget(name_label)
 
-        # 滚动区域：显示每个位置的结果详情
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("""
-            QScrollArea { border: 1px solid #444; border-radius: 3px;
-                          background-color: #1e1e1e; }
-            QScrollBar:vertical { width: 6px; background: #2d2d2d; }
-            QScrollBar::handle:vertical { background: #555; border-radius: 3px; }
+        # 检测结果（NG）
+        result_label = QLabel("检测结果: NG")
+        result_label.setAlignment(Qt.AlignCenter)
+        result_label.setStyleSheet("""
+            font-size: 16px; font-weight: bold; color: #EF5350;
+            padding: 4px; background-color: #1e1e1e;
+            border: 1px solid #C62828; border-radius: 4px;
         """)
+        layout.addWidget(result_label)
 
-        scroll_content = QWidget()
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setSpacing(4)
-        scroll_layout.setContentsMargins(4, 4, 4, 4)
+        # 消息（可选）
+        if result.message:
+            msg_label = QLabel(f"消息: {result.message}")
+            msg_label.setAlignment(Qt.AlignCenter)
+            msg_label.setWordWrap(True)
+            msg_label.setStyleSheet("font-size: 12px; color: #999; border: none;")
+            layout.addWidget(msg_label)
 
-        for i, r in enumerate(results):
-            # 每个位置的结果卡片
-            card = QFrame()
-            card.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {'#1a2a1a' if r.passed else '#2a1a1a'};
-                    border: 1px solid {'#2E7D32' if r.passed else '#C62828'};
-                    border-radius: 4px;
-                }}
-            """)
-            card_layout = QVBoxLayout(card)
-            card_layout.setSpacing(2)
-            card_layout.setContentsMargins(6, 3, 6, 3)
-
-            # 位置名称 + 结果
-            header = QHBoxLayout()
-            name_label = QLabel(f"📍 位置 {i + 1}: {r.name}")
-            name_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #d4d4d4; border: none;")
-            result_text = "OK" if r.passed else "NG"
-            result_color = "#66BB6A" if r.passed else "#EF5350"
-            result_label = QLabel(result_text)
-            result_label.setAlignment(Qt.AlignCenter)
-            result_label.setStyleSheet(f"""
-                font-size: 14px; font-weight: bold; color: {result_color};
-                background-color: #1e1e1e; border: 1px solid {result_color};
-                border-radius: 3px; padding: 1px 10px; min-width: 40px;
-            """)
-            header.addWidget(name_label)
-            header.addStretch()
-            header.addWidget(result_label)
-            card_layout.addLayout(header)
-
-            # 消息
-            if r.message:
-                msg_label = QLabel(f"消息: {r.message}")
-                msg_label.setStyleSheet("font-size: 11px; color: #999; border: none;")
-                msg_label.setWordWrap(True)
-                card_layout.addWidget(msg_label)
-
-            # 耗时
-            time_label = QLabel(f"耗时: {r.elapsed_ms:.1f}ms")
-            time_label.setStyleSheet("font-size: 11px; color: #888; border: none;")
-            card_layout.addWidget(time_label)
-
-            scroll_layout.addWidget(card)
-
-        scroll_layout.addStretch()
-        scroll.setWidget(scroll_content)
-        layout.addWidget(scroll, 1)
+        layout.addStretch()
 
         # 按钮区域
         btn_layout = QHBoxLayout()
@@ -942,7 +936,7 @@ class InspectionPanel(QWidget):
             }
             QPushButton:hover { background-color: #388E3C; }
         """)
-        btn_ok.setMinimumHeight(36)
+        btn_ok.setMinimumHeight(40)
 
         btn_ng = QPushButton("✗ 确认为 NG")
         btn_ng.setStyleSheet("""
@@ -952,7 +946,7 @@ class InspectionPanel(QWidget):
             }
             QPushButton:hover { background-color: #D32F2F; }
         """)
-        btn_ng.setMinimumHeight(36)
+        btn_ng.setMinimumHeight(40)
 
         btn_layout.addStretch()
         btn_layout.addWidget(btn_ok)
@@ -976,7 +970,7 @@ class InspectionPanel(QWidget):
 
         # 保存对话框引用，以便实体按键（D1/D2）或复位（D3）信号能关闭它
         self._ng_dialog = dialog
-        self._append_log("⚠️ NG 检测结果，等待手工确认...")
+        self._append_log(f"⚠️ NG 点位 {current}/{total} [{result.name}]，等待手工确认...")
         dialog.exec_()
         self._ng_dialog = None  # 对话框关闭后清除引用
 

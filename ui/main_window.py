@@ -622,6 +622,10 @@ class MainWindow(QMainWindow):
         self._inspection_workflow.all_results_ready.connect(self._on_workflow_all_results)
         # 启动触发信号 → 立即熄灭指示灯（8 秒内再次启动则灯直接熄灭）
         self._inspection_workflow.trigger_count_changed.connect(self._on_workflow_triggered)
+        # 复位信号 → 执行自动回零
+        self._inspection_workflow.reset_requested.connect(self._start_home_sequence)
+        # 回零完成信号 → 通知工作流继续执行（如再次跑到起始位等待下次测试）
+        self._inspection_workflow.home_completed.connect(self._on_workflow_home_completed)
 
     def _build_engineer_page(self):
         page = QWidget()
@@ -1337,6 +1341,11 @@ class MainWindow(QMainWindow):
             log_warning(f"SMC6480 自动连接失败: {e}（可通过轴控制面板手动重连）")
             self._set_home_state("未回零")
 
+        # 自动连接完成后刷新轴控制面板的连接状态显示
+        # （set_controller 会触发 _update_connection_ui，根据 is_connected 更新 UI）
+        if hasattr(self, '_smc_panel') and self._smc_panel is not None:
+            self._smc_panel.set_controller(self._smc_controller)
+
     # 回零参数（写死在代码中，与官方程序一致，避免跑过限位）
     HOME_START_SPEED = 100    # 启动速度
     HOME_ZERO_SPEED = 1000     # 回零低速（回零时的速度）
@@ -1364,8 +1373,8 @@ class MainWindow(QMainWindow):
         except Exception as e:  # noqa: BLE001
             log_warning(f"设置轴 {iaxis} 回零参数失败: {e}")
 
-    # 回零轴顺序（安全顺序：先 Z 轴抬起，再 X/Y 轴）
-    # Z 轴号默认 2（Axis2），X/Y 轴号与产品配置 motion.x_axis / motion.y_axis 一致
+    # 回零轴顺序（安全顺序：X/Y 轴）
+    # X/Y 轴号与产品配置 motion.x_axis / motion.y_axis 一致
     HOME_AXIS_Z = 2
 
     def _set_home_state(self, state: str):
@@ -1383,14 +1392,13 @@ class MainWindow(QMainWindow):
                 log_warning(f"更新回零状态指示失败: {e}")
 
     def _start_home_sequence(self):
-        """手动触发完整自动回零（安全顺序：先 Z 轴抬起，再 X/Y 轴）。
+        """手动触发完整自动回零（X/Y 轴并行回零）。
 
         由自动化面板的「复位」按钮调用。回零过程中：
             - 防重复触发：若已在回零中，直接忽略本次请求
             - 急停处理：回零过程中再次按下复位按钮将立即停止回零
         回零前设置回零速度（避免跑过限位），回零过程中显示黄灯。
-        由于 Motion_CheckDown / Motion_Home_IfHoming 等状态查询函数在部分
-        DLL 版本中调用会返回错误，这里改用固定延时等待回零完成。
+        所有轴同时启动硬件回零（并行），轮询等待全部完成。
         """
         if self._smc_controller is None or not self._smc_controller.is_connected:
             log_warning("控制器未连接，无法回零")
@@ -1407,28 +1415,32 @@ class MainWindow(QMainWindow):
         self._set_home_state("回零中")
         self._home_in_progress = True
 
-        # 回零轴顺序：先 Z 轴抬起，再 X/Y 轴
-        self._home_axes = [self.HOME_AXIS_Z, 0, 1]
-        self._home_axis_index = 0
+        # 回零轴： X/Y 轴（并行回零）
+        self._home_axes = [0, 1]
+        # 各轴回零完成标志（并行回零用）
+        self._home_done = {iaxis: False for iaxis in self._home_axes}
+        # 等待计数器（固定延时兜底）
         self._home_wait_count = 0
-        self._home_wait_ticks = 5  # 每个轴回零等待 5 秒（100ms × 50）
+        self._home_wait_ticks = 50  # 每个轴回零等待 5 秒（100ms × 50）
+        self._home_total_wait = 0  # 总等待时间（秒）
 
-        # 启动第一个轴（Z 轴）的硬件回零（先设置回零速度）
-        try:
-            self._set_home_speed(self._home_axes[0])
-            self._smc_controller.home_move(self._home_axes[0])
-            log_info(f"轴 {self._home_axes[0]} 开始硬件回零")
-        except Exception as e:  # noqa: BLE001
-            log_warning(f"轴 {self._home_axes[0]} 回零启动失败: {e}")
-            self._home_axis_index += 1
+        # 一次性启动所有轴的硬件回零（并行，先设置回零速度）
+        for iaxis in self._home_axes:
+            try:
+                self._set_home_speed(iaxis)
+                self._smc_controller.home_move(iaxis)
+                log_info(f"轴 {iaxis} 开始硬件回零")
+            except Exception as e:  # noqa: BLE001
+                log_warning(f"轴 {iaxis} 回零启动失败: {e}")
+                self._home_done[iaxis] = True  # 启动失败视为该轴已完成
 
-        # 启动回零轮询定时器（固定延时等待）
+        # 启动回零轮询定时器
         if not hasattr(self, '_home_poll_timer') or self._home_poll_timer is None:
             from PyQt5.QtCore import QTimer
             self._home_poll_timer = QTimer(self)
             self._home_poll_timer.timeout.connect(self._on_home_poll)
         self._home_poll_timer.start(100)
-        log_info("开始手动硬件回零（Z→X/Y）...")
+        log_info("开始手动硬件回零（X/Y 并行）...")
 
     def _abort_home_sequence(self):
         """急停回零：立即停止所有轴回零，回到未回零状态。"""
@@ -1446,11 +1458,13 @@ class MainWindow(QMainWindow):
         log_warning("回零已急停，各轴保持当前位置")
 
     def _on_home_poll(self):
-        """固定延时等待回零完成，依次回零 Z→X/Y 轴。
+        """轮询判断回零完成（并行回零，用 Motion_Home_IfHoming 判断各轴是否仍在回零中）。
 
-        由于状态查询函数（Motion_CheckDown / Motion_Home_IfHoming）在部分
-        DLL 版本中调用会返回错误，这里用固定延时（每轴 5 秒）等待回零完成。
-        回零完成后灭灯并更新状态为「已回零」。
+        注意：不能用 Motion_CheckDown 判断回零完成。SMC6480 硬件回零完成后，
+        轴虽已停止、位置归零，但控制卡内部仍认为该轴处于"回零中"状态，
+        Motion_CheckDown 会一直返回 False（未停止），导致永远显示"回零中"。
+        正确做法是用 Motion_Home_IfHoming：返回 True 表示仍在回零中，
+        返回 False 表示回零流程已结束。调用失败时回退固定延时。
         """
         if self._smc_controller is None or not self._smc_controller.is_connected:
             if hasattr(self, '_home_poll_timer') and self._home_poll_timer is not None:
@@ -1460,36 +1474,59 @@ class MainWindow(QMainWindow):
             log_warning("控制器断开，回零中断")
             return
 
-        if self._home_axis_index >= len(self._home_axes):
-            # 所有轴回零完成 → 灭灯，状态置为已回零
-            if hasattr(self, '_home_poll_timer') and self._home_poll_timer is not None:
-                self._home_poll_timer.stop()
-            self._home_in_progress = False
-            self._set_light(red_on=False, green_on=False)
-            self._set_home_state("已回零")
-            log_info("手动硬件回零完成，Z/X/Y 轴已回到原点")
-            return
-
-        # 等待当前轴回零完成（固定延时）
-        self._home_wait_count += 1
-        if self._home_wait_count < self._home_wait_ticks:
-            return
-
-        # 当前轴回零等待结束，启动下一个轴回零
-        iaxis = self._home_axes[self._home_axis_index]
-        log_info(f"轴 {iaxis} 回零等待结束")
-        self._home_axis_index += 1
-        self._home_wait_count = 0
-
-        if self._home_axis_index < len(self._home_axes):
-            next_axis = self._home_axes[self._home_axis_index]
+        # 并行回零：轮询所有轴，逐个更新完成标志
+        all_done = True
+        for iaxis in self._home_axes:
+            if self._home_done.get(iaxis, False):
+                continue  # 该轴已完成
             try:
-                self._set_home_speed(next_axis)
-                self._smc_controller.home_move(next_axis)
-                log_info(f"轴 {next_axis} 开始硬件回零")
-            except Exception as e:  # noqa: BLE001
-                log_warning(f"轴 {next_axis} 回零启动失败: {e}")
-                self._home_axis_index += 1
+                still_homing = self._smc_controller.if_home_moving(iaxis)
+            except Exception as e:
+                # if_home_moving 调用失败（部分 DLL 版本会返回错误），回退到固定延时
+                log_warning(f"if_home_moving 轴 {iaxis} 失败，回退固定延时: {e}")
+                self._home_wait_count += 1
+                if self._home_wait_count < self._home_wait_ticks:
+                    return
+                self._home_wait_count = 0
+                # 固定延时兜底：视为该轴回零完成，避免卡死
+                self._home_done[iaxis] = True
+                log_info(f"轴 {iaxis} 回零完成 (固定延时兜底)")
+                continue
+            if still_homing:
+                # 该轴仍在回零中，未全部完成
+                all_done = False
+            else:
+                # 该轴回零流程已结束（轴已停止、位置归零）
+                self._home_done[iaxis] = True
+                log_info(f"轴 {iaxis} 回零完成 (if_home_moving)")
+
+        if not all_done:
+            # 仍有轴在回零中，继续等待
+            self._home_total_wait += 1
+            if self._home_total_wait > 100:
+                log_warning("回零总等待时间超过，强制结束")
+                for iaxis in self._home_axes:
+                    self._home_done[iaxis] = True
+            else:
+                return
+
+        # 所有轴回零完成 → 灭灯，状态置为已回零
+        if hasattr(self, '_home_poll_timer') and self._home_poll_timer is not None:
+            self._home_poll_timer.stop()
+        self._home_in_progress = False
+        self._set_light(red_on=False, green_on=False)
+        self._set_home_state("已回零")
+        log_info("手动硬件回零完成，X/Y 轴已回到原点")
+
+        # 通知工作流回零完成（若测试结束后自动回零，则再次跑到起始位等待下次测试）
+        if hasattr(self, '_inspection_workflow') and self._inspection_workflow is not None:
+            self._inspection_workflow.home_completed.emit()
+
+
+    def _on_workflow_home_completed(self):
+        """工作流回零完成回调 - 通知工作流继续执行（如再次跑到起始位等待下次测试）。"""
+        if hasattr(self, '_inspection_workflow') and self._inspection_workflow is not None:
+            self._inspection_workflow.on_home_completed()
 
     def _on_smc_connection_changed(self, connected: bool):
         """轴控制面板连接状态变化回调 - 同步主窗口的控制器引用。"""
@@ -2771,49 +2808,49 @@ class ProductConfigDialog(QDialog):
 
         layout.addWidget(home_group)
 
-        # ── DI 配置 ──
-        di_group = QGroupBox("触发配置")
-        di_layout = QFormLayout(di_group)
-        di_layout.setSpacing(8)
-        di_layout.setContentsMargins(12, 18, 12, 12)
+        # # ── DI 配置 ──
+        # di_group = QGroupBox("触发配置")
+        # di_layout = QFormLayout(di_group)
+        # di_layout.setSpacing(8)
+        # di_layout.setContentsMargins(12, 18, 12, 12)
 
-        di_bit = self._config.get("di_bit", 3) if self._config else 3
-        self._edit_di_bit = QSpinBox()
-        self._edit_di_bit.setRange(0, 31)
-        self._edit_di_bit.setValue(di_bit)
-        di_layout.addRow("DI 输入位:", self._edit_di_bit)
+        # """ di_bit = self._config.get("di_bit", 3) if self._config else 3
+        # self._edit_di_bit = QSpinBox()
+        # self._edit_di_bit.setRange(0, 31)
+        # self._edit_di_bit.setValue(di_bit)
+        # di_layout.addRow("DI 输入位:", self._edit_di_bit) """
 
-        layout.addWidget(di_group)
+        # layout.addWidget(di_group)
 
-        # ── 扫码配置 ──
-        scan_group = QGroupBox("一维码扫码配置")
-        scan_layout = QFormLayout(scan_group)
-        scan_layout.setSpacing(8)
-        scan_layout.setContentsMargins(12, 18, 12, 12)
+        # # ── 扫码配置 ──
+        # scan_group = QGroupBox("一维码扫码配置")
+        # scan_layout = QFormLayout(scan_group)
+        # scan_layout.setSpacing(8)
+        # scan_layout.setContentsMargins(12, 18, 12, 12)
 
-        barcode_cfg = self._config.get("barcode_scan", {}) if self._config else {}
+        # barcode_cfg = self._config.get("barcode_scan", {}) if self._config else {}
 
-        self._scan_enabled_cb = QCheckBox("启用扫码")
-        self._scan_enabled_cb.setChecked(barcode_cfg.get("enabled", False))
-        self._scan_enabled_cb.setStyleSheet("color: #d4d4d4; font-size: 14px; spacing: 8px;")
-        scan_layout.addRow("", self._scan_enabled_cb)
+        # self._scan_enabled_cb = QCheckBox("启用扫码")
+        # self._scan_enabled_cb.setChecked(barcode_cfg.get("enabled", False))
+        # self._scan_enabled_cb.setStyleSheet("color: #d4d4d4; font-size: 14px; spacing: 8px;")
+        # scan_layout.addRow("", self._scan_enabled_cb)
 
-        self._scan_position = QSpinBox()
-        self._scan_position.setRange(-1000000, 1000000)
-        self._scan_position.setValue(barcode_cfg.get("position", 0))
-        scan_layout.addRow("扫码位坐标:", self._scan_position)
+        # self._scan_position = QSpinBox()
+        # self._scan_position.setRange(-1000000, 1000000)
+        # self._scan_position.setValue(barcode_cfg.get("position", 0))
+        # scan_layout.addRow("扫码位坐标:", self._scan_position)
 
-        self._scan_command = QLineEdit(barcode_cfg.get("command", "01 54 04"))
-        self._scan_command.setPlaceholderText("如: 01 54 04")
-        scan_layout.addRow("扫描命令(HEX):", self._scan_command)
+        # self._scan_command = QLineEdit(barcode_cfg.get("command", "01 54 04"))
+        # self._scan_command.setPlaceholderText("如: 01 54 04")
+        # scan_layout.addRow("扫描命令(HEX):", self._scan_command)
 
-        self._scan_timeout = QSpinBox()
-        self._scan_timeout.setRange(1000, 60000)
-        self._scan_timeout.setValue(barcode_cfg.get("timeout_ms", 5000))
-        self._scan_timeout.setSuffix(" ms")
-        scan_layout.addRow("扫码超时:", self._scan_timeout)
+        # self._scan_timeout = QSpinBox()
+        # self._scan_timeout.setRange(1000, 60000)
+        # self._scan_timeout.setValue(barcode_cfg.get("timeout_ms", 5000))
+        # self._scan_timeout.setSuffix(" ms")
+        # scan_layout.addRow("扫码超时:", self._scan_timeout)
 
-        layout.addWidget(scan_group)
+        # layout.addWidget(scan_group)
 
         # ── 位置列表（图块化轴配置）──
         pos_group = QGroupBox("检测位置（图块化轴配置）")
@@ -3122,12 +3159,13 @@ class ProductConfigDialog(QDialog):
         config = {
             "name": name,
             "description": self._edit_desc.text().strip(),
-            "barcode_scan": {
-                "enabled": self._scan_enabled_cb.isChecked(),
-                "position": self._scan_position.value(),
-                "command": self._scan_command.text().strip() or "01 54 04",
-                "timeout_ms": self._scan_timeout.value()
-            },
+            #————扫码配置已移除，生产模式不再使用扫码功能，该功能由视觉扫码替代
+            # "barcode_scan": {         
+            #     "enabled": self._scan_enabled_cb.isChecked(),
+            #     "position": self._scan_position.value(),
+            #     "command": self._scan_command.text().strip() or "01 54 04",
+            #     "timeout_ms": self._scan_timeout.value()
+            # },
             "camera": {
                 "exposure_time": int(self._edit_exposure.value()),
                 "gain": self._edit_gain.value()
@@ -3158,7 +3196,20 @@ class ProductConfigDialog(QDialog):
                 "end_x": self._edit_end_x.value(),
                 "end_y": self._edit_end_y.value()
             },
-            "di_bit": self._edit_di_bit.value(),
+            # 触发位设置功能已移除，生产模式由固定 DI 触发位替代
+            # "di_bit": self._edit_di_bit.value(),
+            "di_bit": 2,  # 固定 DI 触发位为 2
+            "io":{
+                "start": 2,
+                "stop": 3,
+                "reset": 10,
+                "rejudge_ok": 11,
+                "rejudge_ng": 6,
+                "unload_sensor": 8,
+                "unload_btn": 7,
+                "red_light": 3,
+                "green_light": 4
+            },
             "poll_interval_ms": 50,
             "positions": positions
         }

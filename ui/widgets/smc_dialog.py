@@ -473,6 +473,20 @@ class SMCAxisControlPanel(QWidget):
         except Exception:
             self._axis_state_label.setText("--")
 
+        # 回零状态轮询：若正在回零中，用 Motion_Home_IfHoming 判断是否已完成
+        if self._homing:
+            try:
+                still_homing = self._controller.if_home_moving(axis)
+            except Exception:
+                # 查询失败时保持"回零中"状态，等待下次轮询
+                return
+            if not still_homing:
+                # 回零流程已结束（轴已停止、位置归零）
+                self._homing = False
+                self._home_state_label.setText("已回零")
+                self._home_state_label.setStyleSheet(self._label_style("#4caf50"))
+                log_info(f"Axis{axis} 回零完成")
+
     # ------------------------------------------------------------------
     # 运动控制
     # ------------------------------------------------------------------

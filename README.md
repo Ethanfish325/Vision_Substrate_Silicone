@@ -103,8 +103,12 @@ Vision_Substrate_Silicone/
 │   ├── users.json                   # 用户数据
 │   ├── production data/             # 生产检测数据（按日期分目录）
 │   │   └── YYYY-MM-DD/
-│   │       ├── NG/                  # NG 数据（原始图像 + 结果图像 + CSV 日志）
-│   │       └── OK/                  # OK 数据（按 SN 保存 + XML + CSV 日志）
+│   │       ├── {SN号}/              # 每个点位（板卡）一个 SN 文件夹
+│   │       │   ├── {SN}_{时间}_pos{序号}_{位置}_{OK/NG}.jpg  # 点位照片
+│   │       │   └── {SN}.xml         # MES 上传用 XML
+│   │       └── 未识别到SN号/        # 未识别到 SN 的点位统一存放
+│   │           ├── {时间}_pos{序号}_{位置}_{OK/NG}.jpg
+│   │           └── {时间}.xml
 │   ├── schemes/                     # 检测方案文件（JSON 格式）
 │   │   └── PCBA.json                # PCBA 视觉方案（MultiROI + TemplateMatch + QRCodeRecognize）
 │   ├── products/                    # 产品配置（JSON 格式）
@@ -284,6 +288,7 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 - **多板卡托盘检测**：每个点位对应一张独立板卡，逐点拍照检测
 - **图像拼接**：按行列网格紧密排列，实时刷新拼接整图（增量累积画布，内存优化）
 - **条码识别**：每张板卡识别二维码/一维码作为 SN，按 SN 保存数据并生成 XML（供 MES 上传）
+- **NG 逐点位确认**：全部检测完成后，对每个 NG 点位单独弹窗确认（硬件 OK/NG 按键），确认后更新该点位判定与 XML
 - **SMC6480 轴运动控制**：起始位 → 各点位（行优先）→ 结束位 → 取出确认
 - **DI 触发**：上升沿检测，多按钮 IO 映射（启动/停止/复位/复判OK/复判NG/下料）
 - **检测工作线程化**：拍照/检测在工作线程执行，主线程保持空闲，DI 轮询持续运行
@@ -303,8 +308,11 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 ### 9. 结果记录
 
 - 自动保存检测结果（OK/NG）
-- **NG 数据保存**：原始图像、标注图像、JSON 数据
-- **OK 数据保存**：按 QR SN 分目录保存 + 生成 XML（供 MES 上传）+ CSV 日志
+- **按 SN 组织保存**：每个点位（板卡）一个 SN 文件夹，照片与 XML 一同保存
+- **OK 与 NG 都保存**：照片文件名含判定（`_OK.jpg` / `_NG.jpg`），不再按 OK/NG 分目录
+- **未识别到 SN**：统一保存到「未识别到SN号」文件夹
+- **每个 SN 一个 XML**（供 MES 上传）：`{SN}.xml`，含 test_sn/test_data/test_result/imgurl
+- **NG 逐点位确认**：全部检测完成后，对每个 NG 点位单独弹窗确认（硬件 OK/NG 按键），确认后更新该点位判定与 XML
 - 自动清理过期数据（默认保留 90 天）
 - 支持 `overlay_image` 工业叠加图层输出
 - 日志系统：按天轮转，自动清理（默认 50GB 限额）
@@ -331,7 +339,7 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 | [`paths.py`](core/paths.py) | 路径管理：数据目录、方案目录、日志目录等 | 函数式 |
 | [`config_manager.py`](core/config_manager.py) | 系统配置管理：相机参数、系统参数、显示参数 | **单例模式** |
 | [`log_manager.py`](core/log_manager.py) | 日志管理：按天轮转、自动清理（50GB 限额）、后台线程清理 | **单例模式**、自定义 Handler |
-| [`result_storage.py`](core/result_storage.py) | 结果存储：NG 数据（图像+JSON）、OK 数据（按 SN + XML）、过期清理 | — |
+| [`result_storage.py`](core/result_storage.py) | 结果存储：按 SN 组织（照片+XML）、OK/NG 都保存、未识别SN文件夹、过期清理 | — |
 | [`serial_comm.py`](core/serial_comm.py) | 串口通信：端口扫描、参数配置、异步读取线程、收发统计 | QThread 异步读取 |
 | [`serial_test_workflow.py`](core/serial_test_workflow.py) | 串口自动测试工作流：状态机、触发解析、结果发送 | **状态机**、**策略模式** |
 | [`product_manager.py`](core/product_manager.py) | 产品配置管理：grid 行列、motion 双轴、io 映射、兼容迁移 | 函数式 |
@@ -561,6 +569,21 @@ pyinstaller main.spec
 ---
 
 ## 更新日志
+
+### v3.1.0 (2026-09-02) — 结果保存重构 + NG 逐点位确认
+
+- **结果保存重构**（[`core/result_storage.py`](core/result_storage.py:1)）：
+  - 目录结构改为按 SN 组织：`YYYY-MM-DD/{SN号}/`，照片与 XML 一同保存
+  - OK 与 NG 都保存（照片文件名含判定 `_OK.jpg` / `_NG.jpg`），不再按 OK/NG 分目录
+  - 未识别到 SN 号时统一保存到「未识别到SN号」文件夹
+  - 每个 SN 一个 XML（`{SN}.xml`），格式：`<test test_sn="..." test_data="..." test_result="OK/NG" imgurl="..."/>`
+  - 修复 OpenCV 不支持中文路径的问题（改用 `cv2.imencode` + 手动写文件）
+- **保存时机优化**（[`core/inspection_workflow.py`](core/inspection_workflow.py:1)）：每个位置检测完成后立即保存照片+XML（图像仍在内存中），修复原代码"图像提前释放导致照片实际未保存"的隐患
+- **NG 逐点位确认**（[`core/inspection_workflow.py`](core/inspection_workflow.py:1)、[`ui/inspection_panel.py`](ui/inspection_panel.py:1)）：
+  - 全部检测完成后，对每个 NG 点位单独弹窗确认（只显示位置名称 + 检测结果 + 第几个 NG）
+  - 通过硬件 OK/NG 按键（rejudge_ok/rejudge_ng）确认
+  - 确认后更新该点位最终判定与对应 XML 的 test_result
+- **测试**：新增 [`tests/test_result_storage.py`](tests/test_result_storage.py:1)（保存逻辑）和 [`tests/test_ng_confirm_flow.py`](tests/test_ng_confirm_flow.py:1)（逐点位确认流程）
 
 ### v3.0.0 (2026-08-27) — 多板卡托盘检测 + SMC6480 运动控制
 
