@@ -557,6 +557,7 @@ class InspectionPanel(QWidget):
         self._workflow.reset_during_confirm.connect(self._on_reset_during_confirm)
         self._workflow.total_elapsed_changed.connect(self._on_total_elapsed_changed)
         self._workflow.barcode_failed.connect(self._on_barcode_failed)
+        self._workflow.tray_missing.connect(self._on_tray_missing)
         self._workflow.stitched_image_ready.connect(self._on_stitched_image_ready)
         self._workflow.takeout_confirm_requested.connect(self._on_takeout_confirm_requested)
         self._workflow.motion_state_changed.connect(self._on_motion_state_changed)
@@ -1015,6 +1016,39 @@ class InspectionPanel(QWidget):
             minutes = int(elapsed_seconds // 60)
             seconds = elapsed_seconds % 60
             self._total_elapsed_label.setText(f"耗时: {minutes}m {seconds:.1f}s")
+
+    def _on_tray_missing(self):
+        """托盘未放入 - 弹出提示弹窗，通知操作员放入测试托盘"""
+        self._append_log("⚠️ 托盘未放入，请放入测试托盘")
+        msg = QMessageBox(self)
+        msg.setWindowTitle("托盘未放入")
+        msg.setText("⚠️ 未检测到测试托盘\n\n请放入测试托盘后再按下启动按键")
+        msg.setIcon(QMessageBox.Warning)
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.button(QMessageBox.Ok).setText("确定")
+        msg.setStyleSheet("""
+            QMessageBox {
+                background-color: #2d2d2d;
+            }
+            QLabel {
+                color: #d4d4d4;
+                font-size: 15px;
+            }
+            QPushButton {
+                background-color: #3c3c3c;
+                color: #d4d4d4;
+                padding: 6px 24px;
+                border: 1px solid #555;
+                border-radius: 3px;
+                font-size: 14px;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+                border-color: #4A90D9;
+            }
+        """)
+        msg.exec_()
 
     def _on_barcode_failed(self):
         """扫码失败 - 弹出提示弹窗，通知操作员重新放入工件"""

@@ -225,6 +225,9 @@ class InspectionWorkflow(QObject):
     barcode_failed = pyqtSignal()
     """扫码失败信号 - 扫码超时或返回 NG 时发射，通知 UI 弹出提示"""
 
+    tray_missing = pyqtSignal()
+    """托盘未放入信号 - 按下启动但托盘未放入时发射，通知 UI 弹出提示"""
+
     stitched_image_ready = pyqtSignal(object)
     """拼接整图更新信号 (np.ndarray) - 每测完一个点位拼入后发射，通知面板刷新"""
 
@@ -344,6 +347,8 @@ class InspectionWorkflow(QObject):
         self._io_ports = {}              # 各按钮对应的端口号 {功能名: 端口号(0-based)}
         self._io_actions = {}            # 各按钮对应的动作 {功能名: 回调}
         self._io_out_ports = {}          # 输出端口 {功能名: 端口号(0-based)}
+        # 托盘放入传感器电平：True=托盘放入时高电平(1)，False=托盘放入时低电平(0)
+        self._tray_sensor_active_high = True
 
         # ── 检测工作线程 ──
         self._worker = None              # 当前检测工作线程（InspectionWorker）
@@ -464,6 +469,13 @@ class InspectionWorkflow(QObject):
             log_warning(f"未知取出确认方式: {self._takeout_mode}，使用默认 manual")
             self._takeout_mode = "manual"
         log_info(f"取出确认方式: {'自动(取出传感器)' if self._takeout_mode == 'auto' else '手动(取出按键)'}")
+
+        # 读取托盘放入传感器电平配置
+        #   True  = 托盘放入时传感器为高电平(1)
+        #   False = 托盘放入时传感器为低电平(0)
+        self._tray_sensor_active_high = bool(
+            product_config.get("tray_sensor_active_high", True))
+        log_info(f"托盘传感器电平: {'高电平=放入' if self._tray_sensor_active_high else '低电平=放入'}")
 
         # 输入按钮（DI）→ 端口号（0-based）
         input_buttons = {
@@ -782,6 +794,13 @@ class InspectionWorkflow(QObject):
             log_warning(f"当前状态 {self._state.value} 不允许触发")
             return
 
+        # 判断托盘是否放入（使用下料感应传感器 unload_sensor）
+        if not self._is_tray_present():
+            log_warning("托盘未放入，拒绝启动检测")
+            self.log_message.emit("托盘未放入，请放入测试托盘")
+            self.tray_missing.emit()
+            return
+
         # 触发计数
         self._trigger_count += 1
         self.trigger_count_changed.emit(self._trigger_count)
@@ -807,6 +826,28 @@ class InspectionWorkflow(QObject):
         self._set_state(self.State.WAITING)
         # 等待默认1000ms后开始检测，避免工件放置不稳导致拍照模糊
         self._start_delay_timer.start(self._config.start_delay_ms)
+
+    def _is_tray_present(self) -> bool:
+        """判断托盘是否放入（使用下料感应传感器 unload_sensor）。
+
+        托盘放入时的电平由产品配置 tray_sensor_active_high 决定：
+            True  = 托盘放入时传感器为高电平(1)
+            False = 托盘放入时传感器为低电平(0)
+
+        Returns:
+            bool: True 表示托盘已放入；未配置传感器或读取失败时默认返回 True（不阻塞）
+        """
+        port = self._io_ports.get("unload_sensor")
+        if port is None or self._controller is None:
+            # 未配置托盘传感器或未连接控制器，默认视为已放入（不阻塞检测）
+            return True
+        try:
+            level = self._controller.read_in_port(port)
+        except Exception as e:  # noqa: BLE001
+            log_warning(f"读取托盘传感器失败: {e}")
+            return True  # 读取失败时不阻塞
+        # 根据电平配置判断托盘是否放入
+        return level if self._tray_sensor_active_high else not level
 
     # ── 状态管理 ──
 

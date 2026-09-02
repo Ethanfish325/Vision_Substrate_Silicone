@@ -33,6 +33,7 @@
   },
   "di_bit": 2,
   "takeout_mode": "manual",
+  "tray_sensor_active_high": false,
   "io": {
     "start": 2,
     "stop": 3,

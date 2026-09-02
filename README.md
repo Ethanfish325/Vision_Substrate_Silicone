@@ -570,6 +570,14 @@ pyinstaller main.spec
 
 ## 更新日志
 
+### v3.1.1 (2026-09-02) — 托盘放入判断
+
+- **托盘放入判断**（[`core/inspection_workflow.py`](core/inspection_workflow.py:1)、[`ui/inspection_panel.py`](ui/inspection_panel.py:1)）：
+  - 按下启动按键时，先判断托盘是否放入（使用下料感应传感器 unload_sensor）
+  - 托盘已放入才继续测试；未放入则弹出模态提示框"请放入测试托盘"
+  - 托盘放入时的电平由产品配置 `tray_sensor_active_high` 决定（DX8000 配置为 false，即放入时低电平）
+- **测试**：新增 [`tests/test_tray_sensor.py`](tests/test_tray_sensor.py:1)（传感器电平实测 demo）和 [`tests/test_tray_check.py`](tests/test_tray_check.py:1)（托盘判断逻辑）
+
 ### v3.1.0 (2026-09-02) — 结果保存重构 + NG 逐点位确认
 
 - **结果保存重构**（[`core/result_storage.py`](core/result_storage.py:1)）：
