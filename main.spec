@@ -227,6 +227,39 @@ if os.path.exists(_smc_dll):
 else:
     print(f"[WARN] 未找到 smcsh_mbs.dll，SMC6480 运动控制功能将不可用")
 
+# ============================================================
+# pyzbar（条码识别）DLL 打包
+# ============================================================
+# pyzbar 通过 ctypes 加载 ZBar DLL（libzbar-32.dll / libiconv-2.dll）。
+# 其 zbar_library.py 会从 Path(__file__).parent（即打包后 _internal/pyzbar/）
+# 加载 DLL，因此 DLL 需打包到 pyzbar/ 子目录。
+# 从当前 Python 环境的 site-packages/pyzbar 目录查找 DLL。
+import site as _site
+_pyzbar_dll_dir = None
+for _sp in _site.getsitepackages():
+    _cand = os.path.join(_sp, 'pyzbar')
+    if os.path.isdir(_cand):
+        _pyzbar_dll_dir = _cand
+        break
+if _pyzbar_dll_dir is None:
+    # 回退：从当前解释器 site-packages 查找
+    import sys as _sys
+    for _p in _sys.path:
+        _cand = os.path.join(_p, 'pyzbar')
+        if os.path.isdir(_cand):
+            _pyzbar_dll_dir = _cand
+            break
+
+if _pyzbar_dll_dir:
+    for _dll_name in ['libzbar-32.dll', 'libzbar-64.dll', 'libiconv-2.dll', 'libiconv.dll']:
+        _dll_path = os.path.join(_pyzbar_dll_dir, _dll_name)
+        if os.path.exists(_dll_path):
+            binaries.append((_dll_path, 'pyzbar'))  # 打包到 _internal/pyzbar/
+            print(f"[INFO] 找到 pyzbar DLL: {_dll_path}")
+    print(f"[INFO] pyzbar DLL 目录: {_pyzbar_dll_dir}")
+else:
+    print(f"[WARN] 未找到 pyzbar 包目录，条码识别功能将不可用")
+
 a = Analysis(
     ['main.py'],
     pathex=[os.getcwd()],
