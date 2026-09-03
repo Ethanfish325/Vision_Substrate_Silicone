@@ -19,6 +19,7 @@ SMC* 前缀的命名不一致。本模块提供与官方一致的调用封装。
 import ctypes
 import os
 import struct
+import sys
 from ctypes import (
     c_char_p,
     c_double,
@@ -192,17 +193,18 @@ class SMCSHDLL:
         将 DLL 路径解析为绝对路径。
 
         若传入的是相对路径，则依次在以下位置查找：
-          1. smcsh_dll.py 所在目录（项目根目录）
+          1. smcsh_dll.py 所在目录（项目根目录 / 打包后 _internal/core）
           2. 项目根目录下的 libs/ 子目录
-          3. 当前工作目录
+          3. 打包后的 _internal/ 根目录（PyInstaller onedir 模式）
+          4. 当前工作目录
         """
         if os.path.isabs(dll_path):
             return dll_path
 
-        # 本模块所在目录（即项目根目录）
+        # 本模块所在目录（即项目根目录；打包后为 _internal/core）
         base_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # 1. 项目根目录
+        # 1. 模块所在目录（项目根目录 / _internal/core）
         candidate = os.path.join(base_dir, dll_path)
         if os.path.exists(candidate):
             return candidate
@@ -212,7 +214,21 @@ class SMCSHDLL:
         if os.path.exists(candidate):
             return candidate
 
-        # 3. 回退到当前工作目录
+        # 3. 打包后的 _internal/ 根目录（PyInstaller onedir 模式）
+        #    打包后 smcsh_mbs.dll 放在 _internal/ 根目录，与 exe 同级
+        if getattr(sys, 'frozen', False):
+            meipass = getattr(sys, '_MEIPASS', None)
+            if meipass:
+                candidate = os.path.join(meipass, dll_path)
+                if os.path.exists(candidate):
+                    return candidate
+            # exe 同级目录（便携式部署时 DLL 与 exe 放在一起）
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            candidate = os.path.join(exe_dir, dll_path)
+            if os.path.exists(candidate):
+                return candidate
+
+        # 4. 回退到当前工作目录
         return os.path.abspath(dll_path)
 
     # ------------------------------------------------------------------

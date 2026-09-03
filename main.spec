@@ -213,6 +213,20 @@ for _dll_name in ['GxIAPI.dll', 'DxImageProc.dll']:
 for _dll_path in _daheng_dlls:
     binaries.append((_dll_path, '.'))  # '.' 表示 _internal/ 根目录
 
+# ============================================================
+# SMC6480 运动控制卡 DLL 打包
+# ============================================================
+# smcsh_mbs.dll 通过 core/smcsh_dll.py 的 ctypes.WinDLL 加载。
+# 打包后 smcsh_dll.py 位于 _internal/ 下，其 _resolve_dll_path 会
+# 以模块所在目录（_internal/）为基准查找 DLL，因此 DLL 需放在
+# _internal/ 根目录（与 smcsh_dll.py 的 base_dir 一致）。
+_smc_dll = os.path.join(os.getcwd(), 'smcsh_mbs.dll')
+if os.path.exists(_smc_dll):
+    binaries.append((_smc_dll, '.'))  # '.' 表示 _internal/ 根目录
+    print(f"[INFO] 找到 SMC6480 DLL（项目目录）: {_smc_dll}")
+else:
+    print(f"[WARN] 未找到 smcsh_mbs.dll，SMC6480 运动控制功能将不可用")
+
 a = Analysis(
     ['main.py'],
     pathex=[os.getcwd()],
