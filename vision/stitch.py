@@ -133,7 +133,7 @@ class RigidStitcher:
         label = "OK" if passed else "NG"
         cv2.rectangle(self._canvas, (px, py), (px + w, py + h), color, 2)
         cv2.putText(self._canvas, label, (px + 4, py + 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 2)
         cv2.putText(self._canvas, name, (px + 4, py + 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
