@@ -216,6 +216,10 @@ class MainWindow(QMainWindow):
         self._serial_comm: Optional[SerialCommManager] = None
         self._serial_workflow: Optional[SerialTestWorkflow] = None
 
+        # MES 功能初始化（须在工作流初始化前，工作流会读取 _mes_client）
+        self._mes_client = None
+        self._init_mes()
+
         # 自动化检测工作流
         self._inspection_workflow: Optional[InspectionWorkflow] = None
         self._init_inspection_workflow()
@@ -602,6 +606,84 @@ class MainWindow(QMainWindow):
 
         self.stack.addWidget(page)
 
+    # ──────────────── MES 功能初始化 ────────────────
+
+    def _init_mes(self):
+        """读取 MES 配置，若启用则创建 MESClient 并接入工作流。
+
+        依据《didi mes接口文档(922024).pdf》：
+            - CheckStation（站位检测）：每块板卡检测后校验
+            - SetStation（过站）：托盘最终确认后统一上报
+        """
+        self._mes_client = None
+        mes_cfg = self.config.get("mes", {}) or {}
+        if not mes_cfg.get("enabled", False):
+            log_info("MES 功能未启用，跳过初始化")
+            return
+
+        try:
+            from core.mes_client import MESClient
+            self._mes_client = MESClient(
+                ip=mes_cfg.get("ip", "172.16.100.18"),
+                port=int(mes_cfg.get("port", 7010)),
+                station_code=mes_cfg.get("stationCode", ""),
+                operator=mes_cfg.get("operator", ""),
+            )
+            log_info(f"MES 功能已启用: {self._mes_client.base_url}, "
+                     f"站点={self._mes_client.station_code}, 员工={self._mes_client.operator}")
+        except Exception as e:  # noqa: BLE001
+            log_error(f"MES 客户端初始化失败: {e}")
+            self._mes_client = None
+
+    def _on_mes_board_checked(self, result):
+        """每块板卡检测完成、识别到 SN 后调用（站位检测 CheckStation）。
+
+        Args:
+            result: PositionResult（含 qr_data 即 SN）
+        """
+        if self._mes_client is None:
+            return
+        sn = getattr(result, "qr_data", "") or ""
+        if not sn:
+            log_warning("MES 站位检测跳过：未识别到 SN")
+            return
+        try:
+            self._mes_client.check_station(sn)
+        except Exception as e:  # noqa: BLE001
+            log_error(f"MES 站位检测失败: sn={sn}, {e}")
+
+    def _on_mes_batch_finished(self, final_ok: bool, results):
+        """托盘最终结果确定后调用（统一过站 SetStation）。
+
+        对每个识别到 SN 的板卡，按其最终判定上报 PASS/FAIL。
+        failItem 按需求：PASS 填 "OK"，FAIL 填 "NG"。
+
+        Args:
+            final_ok: 托盘整体是否 OK
+            results: List[PositionResult]
+        """
+        if self._mes_client is None:
+            return
+        if not results:
+            log_warning("MES 过站上报跳过：无检测结果")
+            return
+
+        reported = 0
+        for r in results:
+            sn = getattr(r, "qr_data", "") or ""
+            if not sn:
+                log_warning(f"MES 过站上报跳过：位置 [{getattr(r, 'name', '')}] 未识别到 SN")
+                continue
+            try:
+                if r.passed:
+                    self._mes_client.report_pass(sn)
+                else:
+                    self._mes_client.report_fail(sn)
+                reported += 1
+            except Exception as e:  # noqa: BLE001
+                log_error(f"MES 过站上报失败: sn={sn}, {e}")
+        log_info(f"MES 过站上报完成: 共上报 {reported}/{len(results)} 块板卡")
+
     # ──────────────── 自动化检测工作流初始化 ────────────────
 
     def _init_inspection_workflow(self):
@@ -626,6 +708,13 @@ class MainWindow(QMainWindow):
         self._inspection_workflow.reset_requested.connect(self._start_home_sequence)
         # 回零完成信号 → 通知工作流继续执行（如再次跑到起始位等待下次测试）
         self._inspection_workflow.home_completed.connect(self._on_workflow_home_completed)
+
+        # 接入 MES 上报回调（若启用 MES）
+        if getattr(self, '_mes_client', None) is not None:
+            self._inspection_workflow.set_mes_callbacks(
+                check_callback=self._on_mes_board_checked,
+                report_callback=self._on_mes_batch_finished,
+            )
 
     def _build_engineer_page(self):
         page = QWidget()

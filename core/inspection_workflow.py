@@ -353,6 +353,10 @@ class InspectionWorkflow(QObject):
         # ── 检测工作线程 ──
         self._worker = None              # 当前检测工作线程（InspectionWorker）
 
+        # ── MES 上报回调 ──
+        self._mes_check_callback = None   # 每块板卡检测后站位检测(CheckStation)回调
+        self._mes_report_callback = None  # 托盘最终确认后统一过站(SetStation)回调
+
     # ── 属性 ──
 
     @property
@@ -780,6 +784,19 @@ class InspectionWorkflow(QObject):
         """
         self._auto_confirm = bool(enabled)
 
+    def set_mes_callbacks(self, check_callback=None, report_callback=None):
+        """设置 MES 上报回调（由主窗口注入，保持工作流与 MES 解耦）。
+
+        Args:
+            check_callback: 每块板卡检测完成、识别到 SN 后调用（站位检测 CheckStation）。
+                            签名: check_callback(result: PositionResult)
+            report_callback: 整个托盘最终结果确定后调用（统一过站 SetStation）。
+                            签名: report_callback(final_ok: bool, results: List[PositionResult])
+        """
+        self._mes_check_callback = check_callback
+        self._mes_report_callback = report_callback
+        log_info("MES 上报回调已设置")
+
     def  start_inspection(self):
         """ 触发一次检测流程，三种触发方式都通过本函数触发检测流程
         1. 手动按下 START 按钮（IO 配置）
@@ -1007,6 +1024,13 @@ class InspectionWorkflow(QObject):
         # 立即保存该点位数据（照片 + XML），此时图像仍在内存中
         self._save_position_data(result, pos)
 
+        # MES 站位检测（CheckStation）：每块板卡检测完成、识别到 SN 后调用
+        if self._mes_check_callback is not None and result.qr_data:
+            try:
+                self._mes_check_callback(result)
+            except Exception as e:  # noqa: BLE001
+                log_error(f"MES 站位检测回调异常: {e}")
+
         # 拼入拼接器后立即释放该张板卡的原始图/标注图，降低内存占用
         # （拼接器已保存缩放后的图像，结果面板已通过信号拿到图像，后续不再需要）
         result.annotated = None
@@ -1123,6 +1147,19 @@ class InspectionWorkflow(QObject):
 
     # ── 显示结果 ──
 
+    def _emit_final_result(self, final_ok: bool):
+        """发射最终结果信号，并触发 MES 统一过站上报（SetStation）。
+
+        所有位置检测 + 人工确认结束后，最终判定确定时调用一次。
+        """
+        self.all_results_ready.emit(final_ok, self._results)
+        # MES 统一过站上报（SetStation）：托盘最终结果确定后调用
+        if self._mes_report_callback is not None:
+            try:
+                self._mes_report_callback(final_ok, self._results)
+            except Exception as e:  # noqa: BLE001
+                log_error(f"MES 过站上报回调异常: {e}")
+
     def _show_final_result(self):
         """显示最终结果"""
         self._set_state(self.State.SHOW_RESULT)
@@ -1146,7 +1183,7 @@ class InspectionWorkflow(QObject):
             self._ok_count += 1
             self.ok_count_changed.emit(self._ok_count)
             # 发射最终结果信号
-            self.all_results_ready.emit(True, self._results)
+            self._emit_final_result(True)
             # 释放结果图像，降低内存占用
             self._release_result_images()
             log_info(f"最终结果: OK "
@@ -1190,7 +1227,7 @@ class InspectionWorkflow(QObject):
         self._ng_count += 1
         self.ng_count_changed.emit(self._ng_count)
         log_info("自动确认: NG")
-        self.all_results_ready.emit(False, self._results)
+        self._emit_final_result(False)
         # 释放结果图像，降低内存占用
         self._release_result_images()
         self.ng_confirm_closed.emit()
@@ -1278,7 +1315,7 @@ class InspectionWorkflow(QObject):
             self.ok_count_changed.emit(self._ok_count)
             log_info("逐点位确认完成，最终结果: OK")
             self.log_message.emit("逐点位确认完成，最终结果: OK")
-            self.all_results_ready.emit(True, self._results)
+            self._emit_final_result(True)
             # 运动控制：OK → 运动到结束位等待取出
             if self._motion_enabled and self._controller is not None:
                 self._move_to_end(callback=self._on_reached_end_ok)
@@ -1289,7 +1326,7 @@ class InspectionWorkflow(QObject):
             self.ng_count_changed.emit(self._ng_count)
             log_info("逐点位确认完成，最终结果: NG")
             self.log_message.emit("逐点位确认完成，最终结果: NG")
-            self.all_results_ready.emit(False, self._results)
+            self._emit_final_result(False)
             # 运动控制：NG → 返回起始位
             if self._motion_enabled and self._controller is not None:
                 self._move_to_start(callback=self._on_returned_to_start)

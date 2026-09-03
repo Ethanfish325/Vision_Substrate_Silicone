@@ -11,12 +11,25 @@ from PyQt5.QtCore import Qt
 
 from core.paths import ensure_dirs, ICON_FILE
 from core.log_manager import init_logger, log_info
+from core.config_manager import ConfigManager
 from ui.main_window import MainWindow
+from ui.widgets.mes_dialog import MESDialog
      
 
 def setup_high_dpi():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
+
+def _show_mes_dialog(app: QApplication):
+    """启动时弹出 MES 设置窗口（模态）。
+
+    回填上次保存的配置，用户确认后保存选择。
+    无论是否使用 MES，都直接进入主界面（不使用 MES 则正常使用，只是不上报）。
+    """
+    from PyQt5.QtWidgets import QDialog
+    dialog = MESDialog()
+    dialog.exec_()
 
 
 def main():
@@ -30,11 +43,14 @@ def main():
     if os.path.exists(ICON_FILE):
         app.setWindowIcon(QIcon(ICON_FILE))
 
-    init_logger() 
+    init_logger()
     log_info("=== PCBA导热硅胶检测设备启动 ===")
 
     ensure_dirs()
- 
+
+    # 启动时先弹出 MES 设置窗口（模态），回填上次配置，保存选择
+    _show_mes_dialog(app)
+
     app.setStyleSheet("""
         QMainWindow {
             background-color: #1e1e1e;

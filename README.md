@@ -56,6 +56,7 @@ Vision_Substrate_Silicone/
 │   ├── product_manager.py           # 产品配置管理器（grid 行列、motion 双轴、io 映射）
 │   ├── controller.py                # SMC6480 运动控制卡封装（轴运动、IO 读写）
 │   ├── smcsh_dll.py                 # SMC6480 DLL 封装（ctypes 绑定、PE 导出表解析）
+│   ├── mes_client.py                # MES 客户端（CheckStation 站位检测、SetStation 过站）
 │   └── inspection_workflow.py       # 自动化检测工作流（多板卡检测、拼接、QR、运动、DI 触发）
 │
 ├── ui/                              # UI 界面模块
@@ -67,6 +68,7 @@ Vision_Substrate_Silicone/
 │       ├── __init__.py
 │       ├── camera_panel.py          # 相机控制面板（含白平衡 R/G/B 调节 UI）
 │       ├── flow_canvas.py           # 流程画布
+│       ├── mes_dialog.py            # MES 设置窗口（是否启用、IP/端口/站点/员工号）
 │       ├── operator_toolbox.py      # 算子工具箱（支持搜索、拖拽）
 │       ├── param_config_dialog.py   # 参数配置对话框（带实时预览）
 │       ├── pipeline_editor.py       # 流水线编辑器
@@ -328,6 +330,31 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 - **自动化/设计双模式**切换
 - **1024×768 分辨率适配**（工控机屏幕）
 
+### 11. MES 功能（制造执行系统对接）
+
+软件启动时先弹出 **MES 设置窗口**（类似登录界面），可选择是否启用 MES 功能。配置（IP/端口/站点编码/员工号）保存到 `config.json`，下次启动自动回填。
+
+依据《didi mes接口文档(922024).pdf》实现两个接口：
+
+| 接口 | 路径 | 说明 |
+|------|------|------|
+| **站位检测 CheckStation** | `POST /openApi/didi/mes/CheckStation` | 校验 SN 是否允许在当前站点过站（参数：sn、stationCode） |
+| **过站 SetStation** | `POST /openApi/didi/mes/SetStation` | 上报 SN 检测结果（参数：sn、operator、stationCode、status、failItem） |
+
+**上报流程**（[`core/mes_client.py`](core/mes_client.py:1)、[`core/inspection_workflow.py`](core/inspection_workflow.py:1)）：
+
+- **每块板卡单独上报一次**，SN 使用该板卡 QR 识别结果
+- **CheckStation（站位检测）**：每块板卡检测完成、识别到 SN 后立即调用，校验该 SN 是否允许过站
+- **SetStation（过站）**：整个托盘全部检测 + 人工确认结束后，对每个识别到 SN 的板卡按其最终判定统一上报
+- **failItem**：PASS 填 `OK`，FAIL 填 `NG`
+- 未识别到 SN 的板卡跳过上报并记录日志
+- 所有请求带超时，网络异常不会阻塞检测流程
+
+**MES 设置窗口**（[`ui/widgets/mes_dialog.py`](ui/widgets/mes_dialog.py:1)）：
+- 「启用 MES 功能」复选框（不勾选则直接进入主界面正常使用，只是不上报）
+- IP 地址、端口号、站点编码、员工号配置
+- 「测试连接」按钮，可测试与 MES 服务器的连通性
+
 ---
 
 ## 模块详解
@@ -345,7 +372,8 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 | [`product_manager.py`](core/product_manager.py) | 产品配置管理：grid 行列、motion 双轴、io 映射、兼容迁移 | 函数式 |
 | [`controller.py`](core/controller.py) | SMC6480 运动控制卡：连接、轴运动、IO 读写、位置检测 | 封装 |
 | [`smcsh_dll.py`](core/smcsh_dll.py) | SMC6480 DLL 封装：ctypes 绑定、PE 导出表解析、容错函数绑定 | 封装 |
-| [`inspection_workflow.py`](core/inspection_workflow.py) | 自动化检测工作流：多板卡检测、拼接、QR、运动、DI 触发、工作线程 | **状态机**、QTimer、QThread |
+| [`mes_client.py`](core/mes_client.py) | MES 客户端：CheckStation 站位检测、SetStation 过站、连接测试 | 封装 |
+| [`inspection_workflow.py`](core/inspection_workflow.py) | 自动化检测工作流：多板卡检测、拼接、QR、运动、DI 触发、工作线程、MES 回调 | **状态机**、QTimer、QThread |
 
 ### `vision/` — 视觉算法模块
 
@@ -364,6 +392,7 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 | [`constants.py`](ui/constants.py) | UI 常量：颜色、图标、样式表 |
 | [`inspection_panel.py`](ui/inspection_panel.py) | 检测面板 |
 | [`widgets/camera_panel.py`](ui/widgets/camera_panel.py) | 相机控制面板：曝光/增益/帧率/白平衡 R/G/B 调节 |
+| [`widgets/mes_dialog.py`](ui/widgets/mes_dialog.py) | MES 设置窗口：是否启用、IP/端口/站点/员工号、测试连接 |
 | [`widgets/pipeline_editor.py`](ui/widgets/pipeline_editor.py) | 流水线编辑器 |
 | [`widgets/operator_toolbox.py`](ui/widgets/operator_toolbox.py) | 算子工具箱：搜索过滤、拖拽 |
 | [`widgets/param_config_dialog.py`](ui/widgets/param_config_dialog.py) | 参数配置对话框：实时预览 |
@@ -430,6 +459,7 @@ PyQt5>=5.15.0       # GUI 框架
 opencv-python>=4.5.0 # 图像处理
 numpy>=1.21.0       # 数值计算
 pyserial>=3.5       # 串口通信
+requests>=2.0.0     # MES HTTP 通信
 gxipy               # 大恒 GalaxySDK（内置于项目 gxipy/ 目录）
 ```
 
@@ -437,13 +467,24 @@ gxipy               # 大恒 GalaxySDK（内置于项目 gxipy/ 目录）
 
 ## 使用说明
 
-### 1. 登录系统
+### 1. MES 设置（启动时弹出）
+
+软件启动时首先弹出 **MES 设置窗口**：
+
+1. 勾选「启用 MES 功能」以启用 MES 上报；不勾选则直接进入主界面正常使用（只是不上报）
+2. 填写 MES 服务器 IP 地址、端口号、站点编码、员工号
+3. 可点击「测试连接」验证与 MES 服务器的连通性
+4. 点击「确定」保存配置并进入主界面（配置保存到 `config.json`，下次启动自动回填）
+
+启用 MES 后，检测流程会自动执行站位检测（CheckStation）与过站（SetStation）上报。
+
+### 2. 登录系统
 
 - 默认管理员账号：`admin` / `admin123`
 - 默认工程师账号：`engineer` / `123456`
 - 默认操作员账号：`operator` / `123456`
 
-### 2. 自动化模式（多板卡托盘检测）
+### 3. 自动化模式（多板卡托盘检测）
 
 1. 在工程师模式下创建产品配置（grid 行列、motion 双轴、起始/结束位、点位 row/col/x/y/scheme、io 映射）
 2. 为每个位置关联视觉方案（MultiROI + TemplateMatch + QRCodeRecognize）
@@ -454,7 +495,7 @@ gxipy               # 大恒 GalaxySDK（内置于项目 gxipy/ 目录）
 7. 检测完成后按 SN 保存数据并生成 XML（供 MES 上传）
 8. 按下 STOP 停止所有动作（继续监听 IO），按下复位回到等待触发状态
 
-### 3. 设计模式（工程师模式）
+### 4. 设计模式（工程师模式）
 
 1. 创建或打开检测方案
 2. 从算子工具箱拖拽算子到流水线插槽
@@ -462,7 +503,7 @@ gxipy               # 大恒 GalaxySDK（内置于项目 gxipy/ 目录）
 4. 加载测试图像进行预览
 5. 保存方案
 
-### 4. 相机操作
+### 5. 相机操作
 
 1. 打开相机面板（默认在主界面右侧）
 2. 点击「刷新」搜索相机设备
@@ -471,7 +512,7 @@ gxipy               # 大恒 GalaxySDK（内置于项目 gxipy/ 目录）
 5. 点击「拍照」采集单帧图像
 6. 触发模式：切换至「触发模式（软触发）」后，点击「发送软触发」采集
 
-### 5. 串口通信
+### 6. 串口通信
 
 1. 通过菜单栏「通信 > 串口通信」打开串口通信对话框
 2. 点击「扫描端口」检测可用串口
@@ -480,7 +521,7 @@ gxipy               # 大恒 GalaxySDK（内置于项目 gxipy/ 目录）
 5. 在发送区输入数据，选择文本或 HEX 模式，点击「发送」
 6. 接收区实时显示接收到的数据
 
-### 6. 串口自动测试工作流
+### 7. 串口自动测试工作流
 
 1. 通过菜单栏「通信 > 串口通信」打开串口通信对话框
 2. 配置串口参数并打开串口
@@ -569,6 +610,24 @@ pyinstaller main.spec
 ---
 
 ## 更新日志
+
+### v3.2.0 (2026-09-03) — MES 功能对接
+
+- **MES 设置窗口**（[`ui/widgets/mes_dialog.py`](ui/widgets/mes_dialog.py:1)）：
+  - 软件启动时先弹出 MES 设置窗口（类似登录界面），可选择是否启用 MES 功能
+  - 新增「启用 MES 功能」复选框、IP/端口/站点编码/员工号配置、「测试连接」按钮
+  - 配置保存到 `config.json`，下次启动自动回填
+- **MES 客户端**（[`core/mes_client.py`](core/mes_client.py:1)）：依据《didi mes接口文档(922024).pdf》实现
+  - **站位检测 CheckStation**：`POST /openApi/didi/mes/CheckStation`（参数 sn、stationCode）
+  - **过站 SetStation**：`POST /openApi/didi/mes/SetStation`（参数 sn、operator、stationCode、status、failItem）
+  - failItem 按需求始终填写：PASS 填 `OK`，FAIL 填 `NG`
+  - 所有请求带超时，网络异常不阻塞检测流程
+- **检测工作流接入**（[`core/inspection_workflow.py`](core/inspection_workflow.py:1)、[`ui/main_window.py`](ui/main_window.py:1)）：
+  - 每块板卡检测完成、识别到 SN 后立即调用 CheckStation 站位检测校验
+  - 整个托盘全部检测 + 人工确认结束后，对每个识别到 SN 的板卡按其最终判定统一 SetStation 上报
+  - 每块板卡单独上报一次，SN 使用 QR 识别结果；未识别到 SN 的板卡跳过上报并记录日志
+- **配置**（[`core/config_manager.py`](core/config_manager.py:1)）：默认配置新增 `mes` 段（enabled/ip/port/stationCode/operator）
+- **依赖**：新增 `requests`（MES HTTP 通信）
 
 ### v3.1.1 (2026-09-02) — 托盘放入判断
 

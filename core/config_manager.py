@@ -40,6 +40,13 @@ class ConfigManager:
         'display': {
             'fullscreen': False,
             'worker_mode': True,
+        },
+        'mes': {
+            'enabled': False,
+            'ip': '172.16.100.18',
+            'port': 7010,
+            'stationCode': '',
+            'operator': '',
         }
     }
 

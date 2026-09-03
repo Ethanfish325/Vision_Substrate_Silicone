@@ -4,6 +4,7 @@ opencv-python>=4.5.0
 numpy>=1.21.0
 pyserial>=3.5
 pyzbar>=0.1.9
+requests>=2.0.0
 
 # 大恒 GalaxySDK（gxipy 包已内置于项目 gxipy/ 目录）
 # 依赖 GxIAPI.dll + DxImageProc.dll，需放置在项目根目录或系统 PATH 中
