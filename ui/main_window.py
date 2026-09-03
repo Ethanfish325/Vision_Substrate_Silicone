@@ -2897,6 +2897,60 @@ class ProductConfigDialog(QDialog):
 
         layout.addWidget(home_group)
 
+        # ── IO / 传感器配置 ──
+        io_group = QGroupBox("IO / 传感器配置")
+        io_layout = QFormLayout(io_group)
+        io_layout.setSpacing(8)
+        io_layout.setContentsMargins(12, 18, 12, 12)
+
+        # 托盘传感器电平（tray_sensor_active_high）
+        self._combo_tray_level = QComboBox()
+        self._combo_tray_level.addItem("放入 = 高电平(1)", True)
+        self._combo_tray_level.addItem("放入 = 低电平(0)", False)
+        self._combo_tray_level.setStyleSheet("""
+            QComboBox {
+                background-color: #3c3c3c; color: #d4d4d4;
+                border: 1px solid #555; border-radius: 3px;
+                padding: 4px 8px; min-height: 22px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #2d2d2d; color: #d4d4d4;
+                selection-background-color: #1a3a5c;
+            }
+        """)
+        # 回填已有配置（默认 True=高电平放入）
+        _tray_high = bool(self._config.get("tray_sensor_active_high", True)) if self._config else True
+        _tray_idx = 0 if _tray_high else 1
+        self._combo_tray_level.setCurrentIndex(_tray_idx)
+        self._combo_tray_level.setToolTip("托盘放入时传感器端口是高电平还是低电平")
+        io_layout.addRow("托盘传感器电平:", self._combo_tray_level)
+
+        # 取出确认方式（takeout_mode）
+        self._combo_takeout = QComboBox()
+        self._combo_takeout.addItem("手动（取出按键）", "manual")
+        self._combo_takeout.addItem("自动（取出传感器）", "auto")
+        self._combo_takeout.setStyleSheet("""
+            QComboBox {
+                background-color: #3c3c3c; color: #d4d4d4;
+                border: 1px solid #555; border-radius: 3px;
+                padding: 4px 8px; min-height: 22px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #2d2d2d; color: #d4d4d4;
+                selection-background-color: #1a3a5c;
+            }
+        """)
+        # 回填已有配置（默认 manual）
+        _takeout = str(self._config.get("takeout_mode", "manual")) if self._config else "manual"
+        _takeout_idx = 0 if _takeout == "manual" else 1
+        self._combo_takeout.setCurrentIndex(_takeout_idx)
+        self._combo_takeout.setToolTip("检测完成后取出工件的确认方式")
+        io_layout.addRow("取出确认方式:", self._combo_takeout)
+
+        layout.addWidget(io_group)
+
         # # ── DI 配置 ──
         # di_group = QGroupBox("触发配置")
         # di_layout = QFormLayout(di_group)
@@ -3288,6 +3342,10 @@ class ProductConfigDialog(QDialog):
             # 触发位设置功能已移除，生产模式由固定 DI 触发位替代
             # "di_bit": self._edit_di_bit.value(),
             "di_bit": 2,  # 固定 DI 触发位为 2
+            # 托盘传感器电平：True=放入时高电平(1)，False=放入时低电平(0)
+            "tray_sensor_active_high": bool(self._combo_tray_level.currentData()),
+            # 取出确认方式：manual=手动(取出按键)，auto=自动(取出传感器)
+            "takeout_mode": str(self._combo_takeout.currentData()),
             "io":{
                 "start": 2,
                 "stop": 3,
