@@ -559,6 +559,8 @@ pyinstaller main.spec
 
 `runtime_hook.py` 会在打包后的程序启动时自动设置 DLL 搜索路径，确保 `GxIAPI.dll` / `DxImageProc.dll` 能被正确加载。
 
+> **说明**：MES 功能使用的 `requests` 库（含 urllib3/certifi/idna 等子库）会被 PyInstaller 自动检测并打包进程序归档，无需额外配置。打包后建议实测一次 MES「测试连接」功能确认网络通信正常。
+
 ---
 
 ## 开发计划
@@ -737,7 +739,7 @@ pyinstaller main.spec
 - 优化深色主题 UI 样式
 - 修复方案加载和保存的兼容性问题
 
-### v1.0.0 (2024-01-01)
+### v1.0.0 (2026-05-28)
 
 - 初始版本发布
 - 支持流水线式视觉检测
