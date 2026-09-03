@@ -1521,7 +1521,7 @@ class QRCodeRecognize(VisionTool):
             cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 1)
             label = f"{bc['type']}:{bc['data']}"
             cv2.putText(overlay, label, (cx + 10, cy),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 3)
+                        cv2.FONT_HERSHEY_SIMPLEX, 5, color, 3)
 
         result_data = {
             "qr_data": first_data,

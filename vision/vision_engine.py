@@ -171,7 +171,7 @@ class VisionEngine:
             if roi_name in roi_results:
                 passed = roi_results[roi_name]
                 color = (0, 255, 0) if passed else (0, 0, 255)  # 绿/红
-                thickness = 10  # 加粗边框突出显示
+                thickness = 20  # 加粗边框突出显示
                 label = "OK" if passed else "NG"
             else:
                 # 未被引用的 ROI：不绘制，避免检测后残留预览时的绿色框
@@ -180,14 +180,14 @@ class VisionEngine:
             cv2.rectangle(annotated, (x, y), (x + w, y + h), color, thickness)
             # ROI 名称文字（放大）
             cv2.putText(annotated, roi_name, (x, y - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 3, color, 2)
             if label:
                 # 在 ROI 框右上角添加 OK/NG 标签（放大）
                 (label_w, _), _ = cv2.getTextSize(
                     label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
                 cv2.putText(annotated, label,
                             (x + w - label_w - 5, y - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 3, color, 2)
 
     def save_error_data(self, scheme_name, product_id,
                         annotated_image, custom_prefix=None):
