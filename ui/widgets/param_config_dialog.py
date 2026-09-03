@@ -23,7 +23,7 @@ class ParamConfigDialog(QDialog):
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
     """
     BTN_OK_STYLE = """
-        QPushButton { background-color: #1976D2; color: #fff; font-size: 13px;
+        QPushButton { background-color: #1976D2; color: #fff; font-size: 19px;
                      font-weight: bold; padding: 4px 14px; border: none; border-radius: 3px; }
         QPushButton:hover { background-color: #1565C0; }
     """
@@ -94,7 +94,7 @@ class ParamConfigDialog(QDialog):
         self.btn_pick_point.setChecked(True)
         self.btn_pick_point.setStyleSheet("""
             QPushButton { background-color: #3c3c3c; color: #d4d4d4; padding: 4px 10px;
-                         border: 1px solid #555; border-radius: 2px; font-size: 13px; }
+                         border: 1px solid #555; border-radius: 2px; font-size: 19px; }
             QPushButton:checked { background-color: #1a5c3a; color: #fff; border-color: #2a8c5a; }
         """)
         self.btn_pick_point.clicked.connect(lambda: self._set_pick_mode("point"))
@@ -103,7 +103,7 @@ class ParamConfigDialog(QDialog):
         self.btn_pick_rect.setCheckable(True)
         self.btn_pick_rect.setStyleSheet("""
             QPushButton { background-color: #3c3c3c; color: #d4d4d4; padding: 4px 10px;
-                         border: 1px solid #555; border-radius: 2px; font-size: 13px; }
+                         border: 1px solid #555; border-radius: 2px; font-size: 19px; }
             QPushButton:checked { background-color: #1a5c3a; color: #fff; border-color: #2a8c5a; }
         """)
         self.btn_pick_rect.clicked.connect(lambda: self._set_pick_mode("rect"))
@@ -111,7 +111,7 @@ class ParamConfigDialog(QDialog):
         self.btn_pick = QPushButton("🎨 取色")
         self.btn_pick.setStyleSheet("""
             QPushButton { background-color: #5c3a1a; color: #D9A04A; padding: 4px 12px;
-                         border: 1px solid #8c5a2a; border-radius: 2px; font-size: 13px; }
+                         border: 1px solid #8c5a2a; border-radius: 2px; font-size: 19px; }
             QPushButton:hover { background-color: #7c4a2a; }
         """)
         self.btn_pick.clicked.connect(self._toggle_color_pick)
@@ -123,7 +123,7 @@ class ParamConfigDialog(QDialog):
         self.btn_preview = QPushButton("预览")
         self.btn_preview.setStyleSheet("""
             QPushButton { background-color: #1a3a5c; color: #4A90D9; padding: 5px 16px;
-                         border: 1px solid #2a5a8c; border-radius: 2px; font-size: 16px; }
+                         border: 1px solid #2a5a8c; border-radius: 2px; font-size: 22px; }
             QPushButton:hover { background-color: #2a4a7c; }
         """)
         self.btn_preview.clicked.connect(self._update_preview)
@@ -306,7 +306,7 @@ class ParamConfigDialog(QDialog):
         self.btn_pick.setText("✔ 完成取色")
         self.btn_pick.setStyleSheet("""
             QPushButton { background-color: #1a5c3a; color: #fff; padding: 4px 12px;
-                         border: 1px solid #2a8c5a; border-radius: 2px; font-size: 13px; }
+                         border: 1px solid #2a8c5a; border-radius: 2px; font-size: 19px; }
             QPushButton:hover { background-color: #2a7c4a; }
         """)
 
@@ -318,7 +318,7 @@ class ParamConfigDialog(QDialog):
         self.btn_pick.setText("🎨 取色")
         self.btn_pick.setStyleSheet("""
             QPushButton { background-color: #5c3a1a; color: #D9A04A; padding: 4px 12px;
-                         border: 1px solid #8c5a2a; border-radius: 2px; font-size: 13px; }
+                         border: 1px solid #8c5a2a; border-radius: 2px; font-size: 19px; }
             QPushButton:hover { background-color: #7c4a2a; }
         """)
         self._update_preview()
@@ -486,7 +486,7 @@ class MultiROIEditorDialog(QDialog):
         left_layout.addWidget(self.image_label, 1)
 
         tip = QLabel("提示：在图像上拖拽绘制新区域，拖拽边框/角点调整大小，点击区域选中，右键取消")
-        tip.setStyleSheet("color: #999; font-size: 17px; padding: 4px;")
+        tip.setStyleSheet("color: #999; font-size: 23px; padding: 4px;")
         left_layout.addWidget(tip)
 
         main_layout.addLayout(left_layout, 2)
@@ -580,7 +580,7 @@ class MultiROIEditorDialog(QDialog):
 
         self.btn_ok = QPushButton("确定")
         self.btn_ok.setStyleSheet("""
-            QPushButton { background-color: #1976D2; color: #fff; font-size: 18px;
+            QPushButton { background-color: #1976D2; color: #fff; font-size: 24px;
                          font-weight: bold; padding: 10px 28px; border: none;
                          border-radius: 3px; }
             QPushButton:hover { background-color: #1565C0; }

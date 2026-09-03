@@ -35,7 +35,7 @@ class MESDialog(QDialog):
 
         # 是否使用 MES 功能
         self._chk_enabled = QCheckBox("启用 MES 功能")
-        self._chk_enabled.setStyleSheet("color: #d4d4d4; font-size: 14px; font-weight: bold;")
+        self._chk_enabled.setStyleSheet("color: #d4d4d4; font-size: 20px; font-weight: bold;")
         layout.addWidget(self._chk_enabled)
 
         # 参数设置分组

@@ -256,7 +256,7 @@ class ZoomableImageWidget(QWidget):
         self.btn_zoom_out = QPushButton("－")
         self.btn_reset = QPushButton("⊙")
         self.zoom_label = QLabel("100%")
-        self.zoom_label.setStyleSheet("color: #999; font-size: 14px;")
+        self.zoom_label.setStyleSheet("color: #999; font-size: 20px;")
 
         for btn in [self.btn_zoom_in, self.btn_zoom_out, self.btn_reset]:
             btn.setFixedSize(28, 24)
@@ -264,7 +264,7 @@ class ZoomableImageWidget(QWidget):
                 QPushButton {
                     background-color: #3c3c3c; color: #d4d4d4;
                     border: 1px solid #555; border-radius: 3px;
-                    font-size: 16px; font-weight: bold; padding: 0;
+                    font-size: 22px; font-weight: bold; padding: 0;
                 }
                 QPushButton:hover { background-color: #4a4a4a; }
             """)

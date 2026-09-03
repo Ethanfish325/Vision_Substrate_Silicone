@@ -132,7 +132,7 @@ class SerialDialog(QDialog):
         self.open_btn.setMinimumHeight(36)
         self.open_btn.setStyleSheet("""
             QPushButton {
-                background-color: #388E3C; color: #fff; font-size: 18px;
+                background-color: #388E3C; color: #fff; font-size: 24px;
                 font-weight: bold; padding: 6px 24px;
                 border: 2px solid #4CAF50; border-radius: 6px;
             }
@@ -143,7 +143,7 @@ class SerialDialog(QDialog):
 
         # 连接状态指示
         self.conn_status_label = QLabel("● 未连接")
-        self.conn_status_label.setStyleSheet("color: #ff5252; font-weight: bold; font-size: 16px;")
+        self.conn_status_label.setStyleSheet("color: #ff5252; font-weight: bold; font-size: 22px;")
         conn_layout.addWidget(self.conn_status_label, 2, 4, 1, 2)
 
         main_layout.addWidget(conn_group)
@@ -193,7 +193,7 @@ class SerialDialog(QDialog):
                 background-color: #1a1a1a; color: #c8c8c8;
                 border: 1px solid #444; border-radius: 3px;
                 font-family: Consolas, "Courier New", monospace;
-                font-size: 16px; padding: 4px;
+                font-size: 22px; padding: 4px;
             }
         """)
         send_layout.addWidget(self.send_edit)
@@ -231,7 +231,7 @@ class SerialDialog(QDialog):
                 background-color: #0d0d0d; color: #c8c8c8;
                 border: 1px solid #444; border-radius: 3px;
                 font-family: Consolas, "Courier New", monospace;
-                font-size: 16px; padding: 4px;
+                font-size: 22px; padding: 4px;
             }
         """)
         recv_layout.addWidget(self.recv_view, 1)
@@ -245,15 +245,15 @@ class SerialDialog(QDialog):
         status_layout.setContentsMargins(4, 2, 4, 2)
 
         self.status_label = QLabel("就绪")
-        self.status_label.setStyleSheet("color: #999; font-size: 15px;")
+        self.status_label.setStyleSheet("color: #999; font-size: 21px;")
         status_layout.addWidget(self.status_label, 1)
 
         self.rx_label = QLabel("RX: 0")
-        self.rx_label.setStyleSheet("color: #4fc3f7; font-size: 15px; padding: 0 8px;")
+        self.rx_label.setStyleSheet("color: #4fc3f7; font-size: 21px; padding: 0 8px;")
         status_layout.addWidget(self.rx_label)
 
         self.tx_label = QLabel("TX: 0")
-        self.tx_label.setStyleSheet("color: #ffa726; font-size: 15px; padding: 0 8px;")
+        self.tx_label.setStyleSheet("color: #ffa726; font-size: 21px; padding: 0 8px;")
         status_layout.addWidget(self.tx_label)
 
         main_layout.addWidget(status_bar)
@@ -263,7 +263,7 @@ class SerialDialog(QDialog):
     def _group_box_style(self):
         return """
             QGroupBox {
-                font-weight: bold; font-size: 16px; border: 1px solid #444;
+                font-weight: bold; font-size: 22px; border: 1px solid #444;
                 border-radius: 4px; margin-top: 10px; padding-top: 16px;
                 color: #d4d4d4;
             }
@@ -302,7 +302,7 @@ class SerialDialog(QDialog):
             QPushButton {
                 background-color: #3c3c3c; color: #b0b0b0;
                 padding: 3px 12px; border: 1px solid #555;
-                border-radius: 3px; font-size: 15px;
+                border-radius: 3px; font-size: 21px;
             }
             QPushButton:hover { background-color: #4a4a4a; }
         """
@@ -424,14 +424,14 @@ class SerialDialog(QDialog):
             self.open_btn.setText("关闭串口")
             self.open_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: #C62828; color: #fff; font-size: 18px;
+                    background-color: #C62828; color: #fff; font-size: 24px;
                     font-weight: bold; padding: 6px 24px;
                     border: 2px solid #EF5350; border-radius: 6px;
                 }
                 QPushButton:hover { background-color: #B71C1C; border-color: #E57373; }
             """)
             self.conn_status_label.setText("● 已连接")
-            self.conn_status_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 16px;")
+            self.conn_status_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 22px;")
             self.send_btn.setEnabled(True)
 
             # 禁用参数修改
@@ -446,14 +446,14 @@ class SerialDialog(QDialog):
             self.open_btn.setText("打开串口")
             self.open_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: #388E3C; color: #fff; font-size: 18px;
+                    background-color: #388E3C; color: #fff; font-size: 24px;
                     font-weight: bold; padding: 6px 24px;
                     border: 2px solid #4CAF50; border-radius: 6px;
                 }
                 QPushButton:hover { background-color: #2E7D32; border-color: #66BB6A; }
             """)
             self.conn_status_label.setText("● 未连接")
-            self.conn_status_label.setStyleSheet("color: #ff5252; font-weight: bold; font-size: 16px;")
+            self.conn_status_label.setStyleSheet("color: #ff5252; font-weight: bold; font-size: 22px;")
             self.send_btn.setEnabled(False)
 
             # 启用参数修改

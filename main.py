@@ -58,7 +58,7 @@ def main():
         QWidget {
             background-color: #2d2d2d;
             color: #d4d4d4;
-            font-size: 12px;
+            font-size: 21px;
         }
         QPushButton {
             background-color: #3c3c3c;

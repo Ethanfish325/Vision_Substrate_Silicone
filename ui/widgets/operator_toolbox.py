@@ -93,7 +93,7 @@ class OperatorToolbox(QWidget):
         # Title
         title = QLabel("算子工具箱")
         title.setStyleSheet("""
-            font-size: 13px;
+            font-size: 19px;
             font-weight: bold;
             color: #cccccc;
             padding: 1px 0;
@@ -112,7 +112,7 @@ class OperatorToolbox(QWidget):
                 border: 1px solid #3c3c3c;
                 border-radius: 3px;
                 background-color: #3c3c3c;
-                font-size: 12px;
+                font-size: 18px;
                 color: #cccccc;
             }
             QLineEdit:focus {

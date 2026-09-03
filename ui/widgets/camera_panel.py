@@ -117,7 +117,7 @@ class CameraPanel(QWidget):
             QPushButton {
                 background-color: #1976D2; color: #fff; font-weight: bold;
                 padding: 3px 14px; border: none; border-radius: 3px;
-                font-size: 13px; min-height: 22px;
+                font-size: 19px; min-height: 22px;
             }
             QPushButton:hover { background-color: #1565C0; }
             QPushButton:disabled { background-color: #3c3c3c; color: #666; }
@@ -140,7 +140,7 @@ class CameraPanel(QWidget):
         display_layout.setSpacing(4)
 
         display_title = QLabel("实时画面")
-        display_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #d4d4d4;")
+        display_title.setStyleSheet("font-size: 19px; font-weight: bold; color: #d4d4d4;")
 
         self.display_label = ZoomableLabel("相机未打开")
         self.display_label.setMinimumSize(400, 300)
@@ -166,7 +166,7 @@ class CameraPanel(QWidget):
         trigger_group = QGroupBox("触发模式")
         trigger_group.setStyleSheet("""
             QGroupBox {
-                font-weight: bold; font-size: 13px; border: 1px solid #444;
+                font-weight: bold; font-size: 19px; border: 1px solid #444;
                 border-radius: 3px; margin-top: 6px; padding-top: 10px;
                 color: #d4d4d4;
             }
@@ -200,7 +200,7 @@ class CameraPanel(QWidget):
             QPushButton {
                 background-color: #3c3c3c; color: #d4d4d4;
                 padding: 3px 8px; border: 1px solid #555;
-                border-radius: 3px; font-weight: bold; font-size: 12px;
+                border-radius: 3px; font-weight: bold; font-size: 18px;
             }
             QPushButton:hover { background-color: #4a4a4a; }
             QPushButton:disabled { background-color: #2d2d2d; color: #555; }

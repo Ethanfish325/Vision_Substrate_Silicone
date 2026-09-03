@@ -290,7 +290,7 @@ class SMCAxisControlPanel(QWidget):
         return """
             QGroupBox {
                 font-weight: bold; 
-                font-size: 13px;    
+                font-size: 19px;    
                 border: 1px 
                 solid #444;
                 border-radius: 4px; 
@@ -304,7 +304,7 @@ class SMCAxisControlPanel(QWidget):
     @staticmethod
     def _label_style(color: str) -> str:
         return f"""
-            font-size: 13px; font-weight: bold; color: {color};
+            font-size: 19px; font-weight: bold; color: {color};
             background-color: #1e1e1e; border: 1px solid #444;
             border-radius: 3px; padding: 1px 6px;
         """
@@ -315,7 +315,7 @@ class SMCAxisControlPanel(QWidget):
             QLineEdit {
                 background-color: #3c3c3c; color: #d4d4d4;
                 border: 1px solid #555; padding: 1px 4px; border-radius: 3px;
-                font-size: 12px;
+                font-size: 18px;
             }
         """
 
@@ -325,7 +325,7 @@ class SMCAxisControlPanel(QWidget):
             QComboBox {
                 background-color: #3c3c3c; color: #d4d4d4;
                 border: 1px solid #555; padding: 1px 4px; border-radius: 3px;
-                font-size: 12px;
+                font-size: 18px;
             }
             QComboBox::drop-down { border: none; }
             QComboBox QAbstractItemView {
@@ -339,7 +339,7 @@ class SMCAxisControlPanel(QWidget):
         return f"""
             QPushButton {{
                 background-color: {bg}; color: #fff; padding: 3px 8px;
-                border: 1px solid #555; border-radius: 3px; font-size: 12px;
+                border: 1px solid #555; border-radius: 3px; font-size: 18px;
             }}
             QPushButton:hover {{ background-color: {hover}; }}
             QPushButton:disabled {{ background-color: #2d2d2d; color: #555; border-color: #3a3a3a; }}

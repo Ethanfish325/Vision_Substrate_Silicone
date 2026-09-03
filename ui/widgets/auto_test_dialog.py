@@ -54,11 +54,11 @@ class AutoTestDialog(QDialog):
         stats_layout = QVBoxLayout(stats_group)
 
         self._progress_label = QLabel("进度: 0 / 0")
-        self._progress_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #4fc3f7;")
+        self._progress_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #4fc3f7;")
         stats_layout.addWidget(self._progress_label)
 
         self._result_label = QLabel("OK: 0    NG: 0")
-        self._result_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #8bc34a;")
+        self._result_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #8bc34a;")
         stats_layout.addWidget(self._result_label)
 
         layout.addWidget(stats_group)

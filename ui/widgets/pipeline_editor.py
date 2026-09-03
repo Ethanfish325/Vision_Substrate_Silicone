@@ -61,7 +61,7 @@ class PipelineEditor(QWidget):
         self.btn_clear = QPushButton("🗑 清空")
         self.btn_clear.setStyleSheet("""
             QPushButton { background-color: #3c3c3c; color: #EF5350; padding: 1px 8px;
-                         border: 1px solid #555; border-radius: 3px; font-size: 13px; }
+                         border: 1px solid #555; border-radius: 3px; font-size: 19px; }
             QPushButton:hover { background-color: #4a2a2a; }
         """)
 
@@ -69,10 +69,10 @@ class PipelineEditor(QWidget):
         layout.addStretch()
 
         self.status_label = QLabel("就绪")
-        self.status_label.setStyleSheet("color: #999; font-size: 13px;")
+        self.status_label.setStyleSheet("color: #999; font-size: 19px;")
 
         self.node_count_label = QLabel("算子: 0")
-        self.node_count_label.setStyleSheet("color: #999; font-size: 13px;")
+        self.node_count_label.setStyleSheet("color: #999; font-size: 19px;")
 
         layout.addWidget(self.node_count_label)
         layout.addWidget(self.status_label)
