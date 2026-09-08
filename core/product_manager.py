@@ -169,14 +169,14 @@ def create_default_config(name: str, rows: int = 1, cols: int = 1) -> Dict[str, 
             "x_axis": 0,
             "y_axis": 1,
             "x": {
-                "v_max": 50000,
-                "a_max": 100000,
+                "v_max": 22000,
+                "a_max": 22000,
                 "origin_position": 0,
                 "move_timeout_s": 10
             },
             "y": {
-                "v_max": 50000,
-                "a_max": 100000,
+                "v_max": 10000,
+                "a_max": 3000,
                 "origin_position": 0,
                 "move_timeout_s": 10
             }

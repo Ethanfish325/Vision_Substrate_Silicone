@@ -56,29 +56,21 @@ CN_TO_EN: Dict[str, str] = {
     "BlobDetection": "SimpleBlobDetect",
 }
 
+# ============================================================================
+# 可用算子清单(工具箱展示范围)
+# ============================================================================
+# 精简原则(2026-09 现场需求):
+#   本设备为"PCB 导热胶垫 + SN 条码"检测,实际只使用三类算子;
+#   图像处理/几何/测量等算子极少使用且增加配置时间,故从工具箱移除。
+#   - 注意:被移除算子的类与 ALL_TOOLS 注册仍然保留,以便旧方案文件兼容
+#     加载(含历史步骤的方案照常打开),仅不再出现在拖拽工具箱中。
+#   - 若要临时恢复某算子,把它加回下面对应列表即可(可逆)。
 _TOOL_CATEGORIES: Dict[str, List[str]] = {
-    "预处理": [
-        "Grayscale", "GaussianBlur", "HistEqualize", "Morphology",
-        "MultiROI", "MedianBlur", "Resize", "AdaptiveThreshold"
-    ],
-    "特征提取": [
-        "CannyEdge", "Threshold", "ContourAnalysis", "BlobDetection",
-        "ContourFilter", "LineDetection", "RectangleDetection"
-    ],
-    "几何检测": [
-        "CircleDetection", "HoughLineDetection", "ContourRectDetection", "SimpleBlobDetect"
-    ],
-    "测量": [
-        "AreaMeasure", "DistanceMeasure", "PointMeasure",
-        "LineMeasure", "AngleMeasure", "ObjectCount",
-        "BrightnessMeasure"
+    "区域": [
+        "MultiROI"
     ],
     "识别": [
-        "ColorRecognition", "TemplateMatch", "EdgeMatch", "FastMatch",
-        "QRCodeRecognize"
-    ],
-    "工具": [
-        "CoordinateTransform", "Calculator", "LogicJudge"
+        "QRCodeRecognize", "ColorRecognition"
     ],
 }
 
