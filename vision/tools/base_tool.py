@@ -43,6 +43,11 @@ class PipelineContext:
 
 
 class VisionTool(ABC):
+    # 能力标记：该算子是否支持"图像上取色"交互（仅 ColorRecognition 等
+    # 颜色类算子声明；通用参数对话框据此按算子显示/隐藏取色区，避免
+    # 取色 UI 与无关算子公用）。
+    SUPPORTS_COLOR_PICK: bool = False
+
     def __init__(self, params: Optional[Dict[str, Any]] = None):
         self.name = type(self).__name__
         self.params: Dict[str, Any] = params if params is not None else {}

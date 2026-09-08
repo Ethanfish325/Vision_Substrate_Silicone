@@ -10,6 +10,8 @@ from core.log_manager import log_warning
 
 class ColorRecognition(VisionTool):
     display_name = "颜色识别"
+    # 颜色类算子：参数配置对话框显示专属的"图像取色"交互
+    SUPPORTS_COLOR_PICK: bool = True
 
     def __init__(self, params=None):
         super().__init__(params)
