@@ -1995,17 +1995,50 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请先选择并应用一个方案")
             return
 
-        # 每次点击测试按钮都重新拍照获取新图像
-        if self._camera_panel is None or not self._camera_panel.is_camera_open():
-            QMessageBox.warning(self, "提示", "请先打开相机")
+        # 相机可用 → 拍照测试
+        if self._camera_panel is not None and self._camera_panel.is_camera_open():
+            # 每次点击测试按钮都重新拍照获取新图像
+            self._pending_engineer_test = True
+            self.eng_btn_run_preview.setEnabled(False)
+            self.eng_btn_run_preview.setText("拍照中...")
+            self.status_label.setText("正在拍照...")
+            QApplication.processEvents()
+            self._capture()
             return
 
-        self._pending_engineer_test = True
-        self.eng_btn_run_preview.setEnabled(False)
-        self.eng_btn_run_preview.setText("拍照中...")
-        self.status_label.setText("正在拍照...")
-        QApplication.processEvents()
-        self._capture()
+        # 相机不可用(未连接/未打开,如无真机调试):选择测试图片模拟一次拍照
+        self._load_test_image_and_run()
+
+    def _load_test_image_and_run(self):
+        """用本地图片模拟拍照并执行设计模式流水线测试。
+
+        无相机时点击「📷 测试」自动弹出文件选择;选中图片后与拍照同等
+        处理:显示原图 → 后台执行流水线 → 展示标注结果与步骤日志。
+        """
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "选择测试图片(模拟拍照)", "",
+            "图像文件 (*.png *.jpg *.jpeg *.bmp *.tiff *.tif);;所有文件 (*.*)")
+        if not filepath:
+            return
+        try:
+            # 使用 imdecode 以支持中文路径
+            img = cv2.imdecode(np.fromfile(filepath, dtype=np.uint8),
+                               cv2.IMREAD_COLOR)
+            if img is None:
+                QMessageBox.warning(self, "加载失败", f"无法读取图片: {filepath}")
+                return
+            self._pending_engineer_test = False  # 无拍照回调,直接执行
+            self._raw_image = img
+            self._raw_height, self._raw_width = img.shape[:2]
+            self.act_capture.setEnabled(True)
+            self.status_label.setText(f"测试图片: {os.path.basename(filepath)} "
+                                      f"({self._raw_width}x{self._raw_height})")
+            log_info(f"加载测试图片: {filepath} ({self._raw_width}x{self._raw_height})")
+            self._show_engineer_image(self._raw_image)
+            self._execute_engineer_test()
+        except Exception as e:  # noqa: BLE001
+            log_error(f"加载测试图片失败: {e}")
+            QMessageBox.critical(self, "加载失败", str(e))
 
     def _execute_engineer_test(self):
         """执行设计模式流水线测试（内部方法，_raw_image 必须非空）"""
