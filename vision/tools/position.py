@@ -103,8 +103,42 @@ class PositionCorrect(VisionTool):
 
     # ── 模板读写 ──
 
-    def set_template(self, template_bgr: np.ndarray, ref_x: int, ref_y: int):
-        """配置界面调用:写入模板图与参考位置。"""
+    # 模板最小纹理要求:标准差低于该值视为纯色/低纹理,拒绝使用。
+    # 纯色模板会让 TM_CCOEFF_NORMED 分数虚高、匹配位置无意义(假成功)。
+    MIN_TEMPLATE_STD: float = 8.0
+
+    def template_is_valid(self) -> bool:
+        """校验当前模板是否具有足够纹理(非纯色)。
+
+        工程现场常见误操作:框选基准时框到无特征的板面/底色,
+        导致模板为纯色 → 匹配 score≈1.0 但位置随机,校正无意义。
+        这里用灰度标准差判定:太低则拒绝。
+        """
+        templ = self._get_template()
+        if templ is None:
+            return False
+        gray = cv2.cvtColor(templ, cv2.COLOR_BGR2GRAY) \
+            if len(templ.shape) == 3 else templ
+        std = float(gray.std())
+        return std >= self.MIN_TEMPLATE_STD
+
+    def set_template(self, template_bgr: np.ndarray, ref_x: int, ref_y: int) -> bool:
+        """配置界面调用:写入模板图与参考位置。
+
+        返回是否成功;模板为纯色/低纹理时返回 False(不写入),避免后续
+        匹配分数虚高、位置随机导致的"假成功"。
+
+        现场提示:基准应框选产品上【稳定且独特】的特征(板角L形、丝印、
+        mark、定位孔等),并让框略大于特征、包含一定对比度。
+        """
+        gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY) \
+            if len(template_bgr.shape) == 3 else template_bgr
+        if float(gray.std()) < self.MIN_TEMPLATE_STD:
+            log_warning(
+                f"基准模板纹理不足(std={float(gray.std()):.2f} < "
+                f"{self.MIN_TEMPLATE_STD}),拒绝保存——请框选板上的稳定特征"
+                f"(板角/丝印/mark),而不是无特征的板面/底色")
+            return False
         self._template_cache = template_bgr
         self.params["template_b64"] = _encode_png_bgr(template_bgr)
         self.params["ref_x"] = int(ref_x)
@@ -112,6 +146,7 @@ class PositionCorrect(VisionTool):
         h, w = template_bgr.shape[:2]
         self.params["ref_w"] = int(w)
         self.params["ref_h"] = int(h)
+        return True
 
     def _get_template(self) -> Optional[np.ndarray]:
         if self._template_cache is not None:
@@ -154,6 +189,13 @@ class PositionCorrect(VisionTool):
                               processed_image=img.copy(),
                               data={},
                               message="未配置基准模板(请双击本步骤框选基准)")
+        # 防御:加载的模板可能是早期保存的纯色/低纹理基准 → 拒绝并提示
+        if not self.template_is_valid():
+            return ToolResult(
+                success=False, passed=False,
+                processed_image=img.copy(), data={},
+                message="基准模板无足够纹理(纯色板面/底色)。请重新双击本步骤,"
+                        "框选板上的稳定特征(板角/丝印/mark)作为基准")
 
         if len(img.shape) == 3:
             gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -186,22 +228,22 @@ class PositionCorrect(VisionTool):
         best_score = -2.0
         best_angle = 0.0
         best_loc = (0, 0)
-        best_rot = None
 
+        # 角度搜索:旋转【整幅输入图】后与 0° 模板匹配(argmax)。
+        # 注意:不旋转模板 + 掩膜——旋转模板产生的黑边会让掩膜匹配
+        # 产生 NaN 分数,导致小角度搜索失效(曾实测 angle 恒为 0)。
         try:
             for angle in self._candidate_angles():
-                rot_t = _rotate_gray(templ_gray, angle)
-                if angle in (0.0, 180.0) or abs(angle % 180.0) < 1e-6:
-                    result = cv2.matchTemplate(gray_img, rot_t,
-                                               cv2.TM_CCOEFF_NORMED)
+                if angle == 0.0:
+                    search_img = gray_img
+                elif abs(angle - 180.0) < 1e-6:
+                    search_img = cv2.rotate(gray_img, cv2.ROTATE_180)
                 else:
-                    # 小角度旋转的模板含黑边,用掩膜忽略黑边
-                    mask = (rot_t > 0).astype(np.uint8) * 255
-                    result = cv2.matchTemplate(gray_img, rot_t,
-                                               cv2.TM_CCOEFF_NORMED,
-                                               mask=mask)
+                    search_img = _rotate_gray(gray_img, angle)
+                result = cv2.matchTemplate(search_img, templ_gray,
+                                           cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(result)
-                if max_val > best_score:
+                if float(max_val) > best_score:
                     best_score = float(max_val)
                     best_angle = float(angle)
                     best_loc = max_loc
@@ -211,20 +253,30 @@ class PositionCorrect(VisionTool):
                               processed_image=img.copy(), data={},
                               message=f"匹配失败: {e}")
 
-        # 特征在当前图中的中心(校正到未缩放模板坐标系)
-        cur_cx = best_loc[0] + tw / 2.0
-        cur_cy = best_loc[1] + th / 2.0
-        if scale_t != 1.0:
-            cur_cx /= scale_t
-            cur_cy /= scale_t
+        # 参考中心(始终用模板未缩放的原尺寸)
+        ref_w = int(self.params.get("ref_w", 0))
+        ref_h = int(self.params.get("ref_h", 0))
+        ref_cx = self.params.get("ref_x", 0) + ref_w / 2.0
+        ref_cy = self.params.get("ref_y", 0) + ref_h / 2.0
 
-        # 参考中心
-        ref_cx = self.params.get("ref_x", 0) + self.params.get("ref_w", tw) / 2.0
-        ref_cy = self.params.get("ref_y", 0) + self.params.get("ref_h", th) / 2.0
+        # 校正所需的平移:把"旋转后图上模板中心"搬回"参考中心"。
+        # 模板缩放仅影响匹配用模板,原图左上角 = best_loc(缩放围绕 0,0),
+        # 模板中心按未缩放原尺寸 ref_w/ref_h 计算。
+        loc_cx = best_loc[0] + ref_w / 2.0
+        loc_cy = best_loc[1] + ref_h / 2.0
+        tx = ref_cx - loc_cx
+        ty = ref_cy - loc_cy
 
-        dx = cur_cx - ref_cx
-        dy = cur_cy - ref_cy
-        angle_deg = best_angle
+        # 平移/角度报告(语义:产品相对参考姿态的偏移;符号与校正矩阵相反)
+        dx = -tx
+        dy = -ty
+        # 归一化角度显示(-180,180],取反:best_angle 是"校正旋转量",
+        # 报告为"产品相对参考旋转了多少"
+        angle_deg = -float(best_angle)
+        while angle_deg > 180:
+            angle_deg -= 360
+        while angle_deg <= -180:
+            angle_deg += 360
 
         if best_score < threshold:
             log_warning(f"位置修正未找到基准: score={best_score:.3f} < "
@@ -237,19 +289,11 @@ class PositionCorrect(VisionTool):
                 message=f"未找到定位基准 (score={best_score:.2f})"
             )
 
-        # 构造校正变换: 绕图像中心旋转 -angle,再平移使特征中心回到参考中心
+        # 构造校正矩阵: 绕图像中心旋转 best_angle(校正量),再平移 (tx, ty)
         center = ((img_w - 1) / 2.0, (img_h - 1) / 2.0)
-        # 匹配中心按模板中心(带缩放)校正
-        cur_cx_s = best_loc[0] + tw / 2.0
-        cur_cy_s = best_loc[1] + th / 2.0
-
-        M = cv2.getRotationMatrix2D(center, -angle_deg, 1.0)
-        # 旋转后原 cur 中心的新位置
-        rx = M[0, 0] * cur_cx_s + M[0, 1] * cur_cy_s + M[0, 2]
-        ry = M[1, 0] * cur_cx_s + M[1, 1] * cur_cy_s + M[1, 2]
-        # 平移量使旋转后的中心落到参考中心
-        M[0, 2] += ref_cx - rx
-        M[1, 2] += ref_cy - ry
+        M = cv2.getRotationMatrix2D(center, float(best_angle), 1.0)
+        M[0, 2] += tx
+        M[1, 2] += ty
 
         corrected = cv2.warpAffine(
             img, M, (img_w, img_h),

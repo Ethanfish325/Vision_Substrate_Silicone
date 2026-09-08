@@ -266,7 +266,11 @@ class PositionCorrectDialog(QDialog):
         if self.original_image is None:
             return
         # 用当前对话框参数暂存试运行(不落 params)
-        self._apply_params()
+        if not self._apply_params():
+            QMessageBox.warning(self, "基准无效",
+                                "框选区域几乎无纹理(纯色板面/底色),无法定位。\n"
+                                "请框选产品上的稳定特征(板角/丝印/mark/定位孔)。")
+            return
         # 对参考图本身试运行:应 score≈1 且角度≈0
         from vision.pipeline import PipelineContext
         from vision.tools.position import PositionCorrect
@@ -305,38 +309,56 @@ class PositionCorrectDialog(QDialog):
         except Exception as e:  # noqa: BLE001
             self.status_label.setText(f"显示异常: {e}")
 
-    def _apply_params(self):
-        """把 UI 状态写入 tool.params。"""
+    def _apply_params(self) -> bool:
+        """把 UI 状态写入 tool.params。
+
+        Returns:
+            True=模板与参数已写入;False=框选区域为纯色/无特征(未写入)。
+        """
         p = self.tool.params
         p["rot_mode"] = self.rot_mode.currentData()
         p["threshold"] = float(self.threshold.value())
         p["angle_min"] = int(self.angle_min.value())
         p["angle_max"] = int(self.angle_max.value())
         p["angle_step"] = float(self.angle_step.value())
-        if self._candidate is not None:
-            c = self._candidate
-            if self.original_image is not None:
-                h, w = self.original_image.shape[:2]
-                c["x"] = max(0, min(int(c["x"]), w - 1))
-                c["y"] = max(0, min(int(c["y"]), h - 1))
-                c["w"] = max(4, min(int(c["w"]), w - c["x"]))
-                c["h"] = max(4, min(int(c["h"]), h - c["y"]))
-            p["ref_x"], p["ref_y"] = int(c["x"]), int(c["y"])
-            p["ref_w"], p["ref_h"] = int(c["w"]), int(c["h"])
-            if self.original_image is not None:
-                templ = self.original_image[c["y"]:c["y"] + c["h"],
-                                            c["x"]:c["x"] + c["w"]].copy()
-                # 模板去噪(轻微高斯)提升匹配稳定性
-                templ = cv2.GaussianBlur(templ, (3, 3), 0)
-                # 复用 set_template(编码 base64 + 写 ref 参数)
-                self.tool.set_template(templ, int(c["x"]), int(c["y"]))
+        if self._candidate is None:
+            return True   # 仅参数(未框选)先放行,由确定时拦截
+        c = self._candidate
+        if self.original_image is not None:
+            h, w = self.original_image.shape[:2]
+            c["x"] = max(0, min(int(c["x"]), w - 1))
+            c["y"] = max(0, min(int(c["y"]), h - 1))
+            c["w"] = max(4, min(int(c["w"]), w - c["x"]))
+            c["h"] = max(4, min(int(c["h"]), h - c["y"]))
+        p["ref_x"], p["ref_y"] = int(c["x"]), int(c["y"])
+        p["ref_w"], p["ref_h"] = int(c["w"]), int(c["h"])
+        if self.original_image is None:
+            return True
+        templ = self.original_image[c["y"]:c["y"] + c["h"],
+                                    c["x"]:c["x"] + c["w"]].copy()
+        # 模板去噪(轻微高斯)提升匹配稳定性
+        templ = cv2.GaussianBlur(templ, (3, 3), 0)
+        # set_template 内部会拒绝纯色/低纹理基准并返回 False
+        ok = self.tool.set_template(templ, int(c["x"]), int(c["y"]))
+        if not ok:
+            self.status_label.setText(
+                "✗ 基准无特征(纯色板面/底色)——请框选板上稳定特征(板角/丝印/mark)")
+            self.summary.setText(
+                "基准无效: 框内几乎无纹理,匹配会失败。请改框特征区域。")
+        return ok
 
     def _on_ok(self):
         if self._candidate is None or self.original_image is None:
             QMessageBox.warning(self, "提示", "请先载入参考图并框选基准")
             return
         try:
-            self._apply_params()
+            ok = self._apply_params()
+            if not ok:
+                QMessageBox.warning(
+                    self, "基准无效",
+                    "框选区域几乎无纹理(纯色板面/底色),无法用于定位。\n"
+                    "请框选产品上的稳定特征(板角/丝印/mark/定位孔),再点确定。")
+                return
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "错误", f"保存基准失败: {e}")
             return
