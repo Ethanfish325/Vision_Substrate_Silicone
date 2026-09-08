@@ -12,6 +12,7 @@ ALL_TOOLS: Dict[str, type] = {}
 # 中文显示名称 -> 类名映射表（用于兼容旧格式方案文件）
 # 旧版方案文件使用 display_name 作为 tool_type，需要映射到类名
 CN_TO_EN: Dict[str, str] = {
+    "位置修正": "PositionCorrect",
     "多区域ROI": "MultiROI",
     "灰度化": "Grayscale",
     "高斯滤波": "GaussianBlur",
@@ -66,6 +67,9 @@ CN_TO_EN: Dict[str, str] = {
 #     加载(含历史步骤的方案照常打开),仅不再出现在拖拽工具箱中。
 #   - 若要临时恢复某算子,把它加回下面对应列表即可(可逆)。
 _TOOL_CATEGORIES: Dict[str, List[str]] = {
+    "定位": [
+        "PositionCorrect"
+    ],
     "区域": [
         "MultiROI"
     ],
@@ -88,6 +92,7 @@ def _register_all_tools():
         "recognize": ["ColorRecognition", "TemplateMatch", "EdgeMatch", "FastMatch",
                       "QRCodeRecognize"],
         "utility": ["CoordinateTransform", "Calculator", "LogicJudge"],
+        "position": ["PositionCorrect"],
     }
 
     for module_name, class_names in module_tools.items():
