@@ -151,6 +151,15 @@ class PipelineEditor(QWidget):
                     "请先加载一张图片（点击「加载图片」按钮），"
                     "然后才能绘制ROI区域。\n\n"
                     "或者，您也可以在方案JSON文件中手动编辑regions参数。")
+        elif tool.name == "PositionCorrect":
+            # 位置修正:专属配置界面(参考图上框选定位基准)
+            from ui.widgets.position_correct_dialog import PositionCorrectDialog
+            preview_img = self._get_preview_image()
+            dialog = PositionCorrectDialog(tool, preview_img, self)
+            if dialog.exec_() == QDialog.Accepted:
+                slot.params = tool.params.copy()
+                self._sync_to_pipeline()
+                self.pipeline_changed.emit()
         else:
             preview_img = self._get_preview_image()
             dialog = ParamConfigDialog(tool, preview_img, context_info, self)
