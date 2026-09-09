@@ -130,12 +130,22 @@ class VisionEngine:
         if step_roi_map is None:
             step_roi_map = {}
 
-        # 第一步：从 MultiROI 工具中提取所有 ROI 区域定义
-        for step in self._pipeline.steps:
+        # 第一步:从 MultiROI 提取 ROI 定义。
+        # 若本次运行存在 ROI 随动(actual_rot),以运行时实际区域为准绘制
+        # (旋转/平移后 ROI 在图上真实位置);否则回退到 params 参考坐标。
+        actual_rot = {}
+        actual_regions = {}
+        for i, step in enumerate(self._pipeline.steps):
             if not step.enabled:
                 continue
             tool_type = type(step.tool).__name__
             if tool_type == "MultiROI":
+                if i < len(results):
+                    res = results[i]
+                    if res and isinstance(res.data, dict):
+                        actual_rot = res.data.get("actual_rot", {}) or {}
+                        actual_regions = (res.data.get("actual_regions", {})
+                                          or {})
                 raw_regions = step.tool.params.get("regions", [])
                 use_pct = step.tool.params.get("use_percentage", False)
                 h_img, w_img = raw_image.shape[:2]
@@ -143,6 +153,8 @@ class VisionEngine:
                 for r in raw_regions:
                     if isinstance(r, dict) and r.get("enabled", True):
                         name = r.get("name", "未命名")
+                        if name in actual_regions:
+                            continue  # 用运行时实际区域
                         if use_pct:
                             x = int(r.get("x", 0) / 100.0 * w_img)
                             y = int(r.get("y", 0) / 100.0 * h_img)
@@ -154,6 +166,15 @@ class VisionEngine:
                             w = r.get("width", r.get("w", 100))
                             h = r.get("height", r.get("h", 100))
                         roi_regions[name] = (x, y, w, h)
+        # 运行时实际区域优先覆盖(含旋转框几何)
+        for name, bbox in actual_regions.items():
+            roi_regions[name] = tuple(bbox)
+        rot_geom = {}   # name -> (cx, cy, w, h, angle_deg)
+        for name, val in actual_rot.items():
+            try:
+                rot_geom[name] = tuple(val)
+            except TypeError:
+                continue
 
         # 第二步：通过 step_roi_map 建立 ROI → 检测结果的映射
         # step_roi_map 由 Pipeline.execute() 在运行时构建，记录了每个步骤使用的 ROI 名称
@@ -171,10 +192,25 @@ class VisionEngine:
             if roi_name in roi_results:
                 passed = roi_results[roi_name]
                 color = (0, 255, 0) if passed else (0, 0, 255)  # 绿/红
-                thickness = 20  # 加粗边框突出显示
+                thickness = 6  # 加粗边框突出显示
                 label = "OK" if passed else "NG"
             else:
                 # 未被引用的 ROI：不绘制，避免检测后残留预览时的绿色框
+                continue
+
+            geom = rot_geom.get(roi_name)
+            if geom is not None:
+                from vision.geometry_util import draw_rotated_rect
+                rcx, rcy, rw, rh, rang = geom
+                draw_rotated_rect(annotated, rcx, rcy, rw, rh, rang,
+                                  color=color, thickness=thickness)
+                cv2.putText(annotated, roi_name,
+                            (int(rcx - rw / 2), int(rcy - rh / 2 - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 2)
+                if label:
+                    cv2.putText(annotated, label,
+                                (int(rcx + rw / 2 - 40), int(rcy - rh / 2 - 8)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 2)
                 continue
 
             cv2.rectangle(annotated, (x, y), (x + w, y + h), color, thickness)

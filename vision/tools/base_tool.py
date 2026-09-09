@@ -28,6 +28,10 @@ class PipelineContext:
     results: Dict[str, 'ToolResult'] = field(default_factory=dict)
     _data: Dict[str, Any] = field(default_factory=dict)
     _images: Dict[str, np.ndarray] = field(default_factory=dict)
+    # ROI 随动附加信息: {region_name: (cx, cy, w, h, angle_deg)}
+    # regions[name] 恒为轴对齐外接框(兼容下游解包);此表保存真正的
+    # 旋转矩形中心/参考宽高/角度,供 base_tool 摆正裁剪与 ROI 框绘制。
+    region_rot: Dict[str, Tuple] = field(default_factory=dict)
 
     def set_data(self, key: str, value: Any):
         self._data[key] = value
@@ -40,6 +44,16 @@ class PipelineContext:
 
     def get_image(self, key: str, default: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
         return self._images.get(key, default)
+
+    # ── 位置修正(定位)结果通道 ──
+    # 由 PositionCorrect 步骤写入;MultiROI 依据它把参考 ROI 变换为当前图坐标。
+    @property
+    def location(self) -> Optional[Dict[str, Any]]:
+        return self._data.get("location")
+
+    @location.setter
+    def location(self, value: Optional[Dict[str, Any]]):
+        self._data["location"] = value
 
 
 class VisionTool(ABC):
@@ -88,6 +102,39 @@ class VisionTool(ABC):
             region_name = input_source[7:]
             if region_name in context.regions:
                 x, y, w, h = context.regions[region_name]
+
+                # ── ROI 随动:该区域存在旋转信息(由 MultiROI 依据定位写入)──
+                # 需要把旋转矩形区域局部摆正为水平,再交给下游算子。
+                rot = context.region_rot.get(region_name)
+                if rot is not None:
+                    from vision.geometry_util import (crop_rotated_rect,
+                                                      is_axis_aligned)
+                    rcx, rcy, rw, rh, rang = rot
+                    if not is_axis_aligned(rang):
+                        img_hh, img_ww = context.current_image.shape[:2]
+                        if not (rcx - rw / 2 > 0 and rcy - rh / 2 > 0
+                                and rcx + rw / 2 < img_ww
+                                and rcy + rh / 2 < img_hh):
+                            # 旋转区域出界:回退外接框普通裁剪(宁可不摆正,
+                            # 也不因越界返回黑图;出界本身会由边界校验兜底 NG)
+                            x0 = max(0, min(x, img_ww - 1))
+                            y0 = max(0, min(y, img_hh - 1))
+                            x1 = min(img_ww, x + w)
+                            y1 = min(img_hh, y + h)
+                            if x1 > x0 and y1 > y0:
+                                return context.current_image[y0:y1,
+                                                             x0:x1].copy()
+                            return context.current_image.copy()
+                        return crop_rotated_rect(
+                            context.current_image,
+                            rcx, rcy, rw, rh, rang)
+                    # 轴对齐旋转(0/90/180/270):angle≈0 直接裁剪;
+                    # 90/180/270 走摆正,保证下游内容方向正确
+                    if abs(rang) > 1e-3:
+                        return crop_rotated_rect(
+                            context.current_image,
+                            rcx, rcy, rw, rh, rang)
+
                 # 从 current_image 裁剪 ROI 区域，保留上游预处理结果
                 # 裁剪坐标不能超出图像边界
                 img_h, img_w = context.current_image.shape[:2]

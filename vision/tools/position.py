@@ -4,30 +4,32 @@
 ================================
 解决"产品摆放偏移/翻转导致固定 ROI 误判"的问题。
 
-原理:
+原理(ROI 随动,不旋转整图):
     在参考图(产品标准摆放)上框选一个稳定特征作为"基准模板"(如板角、
     丝印、mark),记录其参考位置与角度(=0°)。运行时对当前图像做一次
-    轻量模板匹配(支持 0°/180° 翻转 / 小角度范围),求出特征当前中心
-    与角度,然后构造仿射变换把整幅图像"校正回参考姿态":
-        - 绕图像中心旋转 -matched_angle,再平移使特征中心回到参考中心。
-    校正后的图像作为 processed_image 输出给下游,MultiROI 及后续算子
-    仍按参考坐标框选即可自动对准产品,无需感知偏移。
+    轻量模板匹配(支持 0°/180° / 小角度 / 全角度搜索),求出产品相对
+    参考姿态的旋转角度与平移,并把"参考坐标 → 当前图坐标"的仿射矩阵
+    (M_ref2cur)写入 PipelineContext.location。
+
+    后续 MultiROI 依据该矩阵把各参考 ROI 变换为当前图像上的实际区域
+    (旋转 + 平移随动);裁剪时把旋转区域局部摆正,保证颜色/条码算子
+    看到的是水平内容。整幅图像不做旋转(无黑边、无性能损失)。
 
 参数(params):
     template_b64 : 基准模板图像(PNG, base64),由配置界面框选生成
     ref_x/ref_y  : 特征参考位置(模板在参考图中的左上角)
     ref_w/ref_h  : 模板尺寸
-    rot_mode     : "0"(仅0°,最快) / "0and180"(0°与180°翻转)
-                   / "range"(小角度范围)
+    rot_mode     : "0" / "0and180" / "range"(小角度) / "any"(全角度两级搜索)
     angle_min/max/step : range 模式角度搜索范围(度)
     threshold    : 匹配分数阈值(0~1),低于阈值判 NG
 
 输出:
-    ToolResult.passed      : 是否成功定位并校正
-    data.dx/dy             : 特征中心相对参考中心的像素偏移(校正前)
-    data.angle_deg         : 匹配到的最优角度
+    ToolResult.passed      : 是否成功定位
+    context.location       : 定位结果(矩阵/角度/锚点),供 MultiROI 随动
+    data.dx/dy             : 特征中心相对参考中心的像素偏移
+    data.angle_deg         : 产品相对参考的旋转角度
     data.score             : 匹配分数
-    processed_image        : 校正后的图像(未定位成功时返回原图)
+    overlay_image          : 基准参考框(绿) + 当前匹配框(黄) + 偏移连线
 """
 
 import base64
@@ -156,24 +158,94 @@ class PositionCorrect(VisionTool):
 
     # ── 候选角度 ──
 
-    def _candidate_angles(self) -> list:
+    def _candidate_angles(self, fine: bool = False) -> list:
+        """生成角度搜索候选。
+
+        rot_mode:
+            "0"        — 仅 0°
+            "0and180"  — 0° 与 180°(最常见:正放/反放)
+            "range"    — 小角度范围(angle_min..angle_max,默认 ±10°)
+            "any"      — 全角度。两级搜索:
+                          第一级 coarse(30° 步进覆盖全周)由外部调用 fine=False,
+                          第二级在最优角附近 ±20° 内 2° 步进由外部调用 fine=True。
+        """
         mode = self.params.get("rot_mode", "0and180")
         if mode == "0":
             return [0.0]
         if mode == "0and180":
             return [0.0, 180.0]
-        amin = float(self.params.get("angle_min", -10))
-        amax = float(self.params.get("angle_max", 10))
-        astep = float(self.params.get("angle_step", 2))
-        if astep <= 0:
-            return [0.0]
-        vals = [0.0]
-        a = amin
-        while a <= amax + 1e-6:
-            if abs(a) > 1e-6:
-                vals.append(round(float(a), 3))
-            a += astep
-        return sorted(set(vals))
+        if mode == "range":
+            amin = float(self.params.get("angle_min", -10))
+            amax = float(self.params.get("angle_max", 10))
+            astep = float(self.params.get("angle_step", 2))
+            if astep <= 0:
+                return [0.0]
+            vals = [0.0]
+            a = amin
+            while a <= amax + 1e-6:
+                if abs(a) > 1e-6:
+                    vals.append(round(float(a), 3))
+                a += astep
+            return sorted(set(vals))
+        if mode == "any":
+            # 全角度两级
+            if fine:
+                # 由调用方给出中心角,这里仅占位;实际细扫在 _match_any_angle 内
+                return [0.0]
+            # 粗扫:0..330 step 30(避免与 0° 重复)
+            vals = [0.0]
+            a = 30.0
+            while a <= 360 - 1e-6:
+                vals.append(a)
+                a += 30.0
+            return vals
+        # 默认
+        return [0.0]
+
+    def _match_any_angle(self, gray_img: np.ndarray, templ_gray: np.ndarray,
+                         threshold: float):
+        """全角度两级搜索:先粗扫 30°,再在最优角附近 ±20° 细扫。
+
+        Returns:
+            (best_score, best_angle, best_loc)
+        """
+        best_score, best_angle, best_loc = -2.0, 0.0, (0, 0)
+        # ── 第一级:粗扫 ──
+        for angle in self._candidate_angles(fine=False):
+            score, loc = self._match_at_angle(gray_img, templ_gray, angle)
+            if score > best_score:
+                best_score, best_angle, best_loc = score, angle, loc
+
+        # ── 第二级:在粗扫最优角附近细扫 ──
+        fine_angles = []
+        center_angle = float(best_angle)
+        a = center_angle - 20.0
+        while a <= center_angle + 20.0 + 1e-6:
+            fa = round(float(a) % 360.0, 3)
+            if fa > 180:
+                fa -= 360.0
+            fine_angles.append(fa)
+            a += 2.0
+        for angle in sorted(set(fine_angles)):
+            score, loc = self._match_at_angle(gray_img, templ_gray, angle)
+            if score > best_score:
+                best_score, best_angle, best_loc = score, angle, loc
+
+        return best_score, best_angle, best_loc
+
+    def _match_at_angle(self, gray_img: np.ndarray, templ_gray: np.ndarray,
+                        angle: float):
+        """在给定角度下旋转图像匹配 0° 模板,返回 (score, loc)。"""
+        if abs(angle % 360.0) < 1e-6:
+            search_img = gray_img
+        elif abs((angle - 180.0) % 360.0) < 1e-6:
+            search_img = cv2.rotate(gray_img, cv2.ROTATE_180)
+        else:
+            search_img = _rotate_gray(gray_img, angle)
+        result = cv2.matchTemplate(search_img, templ_gray,
+                                   cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        return float(max_val), max_loc
 
     # ── 核心:定位 + 校正 ──
 
@@ -233,20 +305,17 @@ class PositionCorrect(VisionTool):
         # 注意:不旋转模板 + 掩膜——旋转模板产生的黑边会让掩膜匹配
         # 产生 NaN 分数,导致小角度搜索失效(曾实测 angle 恒为 0)。
         try:
-            for angle in self._candidate_angles():
-                if angle == 0.0:
-                    search_img = gray_img
-                elif abs(angle - 180.0) < 1e-6:
-                    search_img = cv2.rotate(gray_img, cv2.ROTATE_180)
-                else:
-                    search_img = _rotate_gray(gray_img, angle)
-                result = cv2.matchTemplate(search_img, templ_gray,
-                                           cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, max_loc = cv2.minMaxLoc(result)
-                if float(max_val) > best_score:
-                    best_score = float(max_val)
-                    best_angle = float(angle)
-                    best_loc = max_loc
+            if self.params.get("rot_mode", "0and180") == "any":
+                best_score, best_angle, best_loc = self._match_any_angle(
+                    gray_img, templ_gray, threshold)
+            else:
+                for angle in self._candidate_angles():
+                    best_score_a, best_loc_a = self._match_at_angle(
+                        gray_img, templ_gray, angle)
+                    if best_score_a > best_score:
+                        best_score = best_score_a
+                        best_angle = float(angle)
+                        best_loc = best_loc_a
         except cv2.error as e:  # noqa: BLE001
             log_error(f"位置修正匹配失败: {e}")
             return ToolResult(success=False, passed=False,
@@ -281,6 +350,7 @@ class PositionCorrect(VisionTool):
         if best_score < threshold:
             log_warning(f"位置修正未找到基准: score={best_score:.3f} < "
                         f"{threshold:.2f} (dx={dx:.1f}, dy={dy:.1f})")
+            context.location = None
             return ToolResult(
                 success=False, passed=False,
                 processed_image=img.copy(),
@@ -289,30 +359,71 @@ class PositionCorrect(VisionTool):
                 message=f"未找到定位基准 (score={best_score:.2f})"
             )
 
-        # 构造校正矩阵: 绕图像中心旋转 best_angle(校正量),再平移 (tx, ty)
+        # ── 输出"定位结果"(不再旋转整图,由下游按变换随动)──
+        # 构造 参考→当前 的仿射矩阵 M_ref2cur:
+        #   校正矩阵 M_corr 满足  M_corr(P_cur) ≈ P_ref(把当前图校正回参考姿态)
+        #   其逆即 参考→当前: P_cur = M_ref2cur(P_ref)
         center = ((img_w - 1) / 2.0, (img_h - 1) / 2.0)
-        M = cv2.getRotationMatrix2D(center, float(best_angle), 1.0)
-        M[0, 2] += tx
-        M[1, 2] += ty
+        M_corr = cv2.getRotationMatrix2D(center, float(best_angle), 1.0)
+        M_corr[0, 2] += tx
+        M_corr[1, 2] += ty
+        # 求逆(2x3 -> 3x3 -> 逆 -> 2x3)
+        M3 = np.vstack([M_corr, [0.0, 0.0, 1.0]])
+        try:
+            M3_inv = np.linalg.inv(M3)
+        except np.linalg.LinAlgError:
+            context.location = None
+            return ToolResult(success=False, passed=False,
+                              processed_image=img.copy(),
+                              data={"matched": False, "score": float(best_score),
+                                    "angle_deg": angle_deg, "dx": float(dx),
+                                    "dy": float(dy)},
+                              message="定位矩阵不可逆")
+        M_ref2cur = M3_inv[:2, :]
 
-        corrected = cv2.warpAffine(
-            img, M, (img_w, img_h),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0) if len(img.shape) == 3 else 0)
+        # 定位结果:供 MultiROI 把参考 ROI 坐标变换为当前图实际区域
+        # 当前锚点 = M_ref2cur 作用于参考锚点(特征在当前图中的实际中心)
+        ref_pt = np.array([ref_cx, ref_cy, 1.0])
+        cur_pt = M_ref2cur @ ref_pt
+        context.location = {
+            "matched": True,
+            "score": float(best_score),
+            "angle_deg": float(angle_deg),      # 产品相对参考的旋转(逆时针+)
+            "dx": float(dx),
+            "dy": float(dy),
+            "matrix": M_ref2cur.tolist(),        # 2x3 仿射: 参考坐标 -> 当前图坐标
+            "ref_anchor_x": float(ref_cx),
+            "ref_anchor_y": float(ref_cy),
+            "cur_anchor_x": float(cur_pt[0]),
+            "cur_anchor_y": float(cur_pt[1]),
+        }
 
-        # 归一化角度显示(-180,180]
-        while angle_deg > 180:
-            angle_deg -= 360
-        while angle_deg <= -180:
-            angle_deg += 360
+        # ── overlay:标注匹配结果 ──
+        overlay = np.zeros_like(img)
+        # 绿框:参考基准位置(产品无偏移时特征应在的位置,角度 0)
+        self._draw_box(overlay, float(ref_cx), float(ref_cy),
+                       ref_w + 6, ref_h + 6, 0.0,
+                       (0, 255, 0), 2, label="基准")
+        # 黄框:实际匹配位置(特征在当前图中的位置,带产品角度)
+        self._draw_box(overlay, float(cur_pt[0]), float(cur_pt[1]),
+                       ref_w, ref_h, float(angle_deg),
+                       (0, 255, 255), 2, label="匹配")
+        # 偏移连线(洋红)
+        cv2.line(overlay,
+                 (int(round(float(cur_pt[0]))), int(round(float(cur_pt[1])))),
+                 (int(round(float(ref_cx))), int(round(float(ref_cy)))),
+                 (255, 0, 255), 1, cv2.LINE_AA)
+        cv2.circle(overlay, (int(round(float(cur_pt[0]))),
+                             int(round(float(cur_pt[1])))), 4, (255, 0, 255), -1)
 
         log_info(f"位置修正: score={best_score:.3f} 角度={angle_deg:.1f}° "
-                 f"dx={dx:.1f} dy={dy:.1f} (已校正)")
+                 f"dx={dx:.1f} dy={dy:.1f} (ROI 随动)")
         return ToolResult(
             success=True,
             passed=True,
-            processed_image=corrected,
+            # 不再输出旋转后的整图——交给 MultiROI 做 ROI 随动
+            processed_image=img.copy(),
+            overlay_image=overlay,
             data={
                 "matched": True,
                 "score": float(best_score),
@@ -323,6 +434,21 @@ class PositionCorrect(VisionTool):
             message=f"位置修正: score={best_score:.2f} "
                     f"偏移=({dx:.0f},{dy:.0f})px 角度={angle_deg:.0f}°"
         )
+
+    @staticmethod
+    def _draw_box(img: np.ndarray, cx: float, cy: float,
+                  w: float, h: float, angle_deg: float,
+                  color, thickness: int, label: str = ""):
+        """画(可能旋转的)矩形框与角标。"""
+        from vision.geometry_util import draw_rotated_rect
+        try:
+            draw_rotated_rect(img, cx, cy, w, h, angle_deg,
+                              color=color, thickness=thickness)
+            if label:
+                cv2.putText(img, label, (int(round(cx - w / 2)), int(round(cy - h / 2 - 6))),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        except Exception as e:  # noqa: BLE001
+            log_warning(f"绘制定位标注失败: {e}")
 
     # ── UI 说明(具体框选界面见 position_correct_dialog.py)──
 

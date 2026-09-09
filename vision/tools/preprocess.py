@@ -258,26 +258,74 @@ class MultiROI(VisionTool):
         raw_regions = self.params.get("regions", [])
         regions = self._normalize_regions(raw_regions, img.shape)
 
+        # ── ROI 随动:若上游 PositionCorrect 写入 location,把参考姿态上的
+        #    各 ROI 变换为当前图实际区域(旋转+平移),使固定 ROI 跟随产品 ──
+        loc = getattr(context, "location", None)
+        rot_info = {}   # region_name -> (cx, cy, w, h, angle_deg)
+        out_regions = {}
+        if loc and loc.get("matched") and loc.get("matrix"):
+            from vision.geometry_util import transform_region
+            matrix = loc["matrix"]
+            for name, (x, y, w, h) in regions.items():
+                tf = transform_region(matrix, x, y, w, h)
+                cx, cy = tf["cx"], tf["cy"]
+                tw, th = tf["w"], tf["h"]
+                ang = tf["angle_deg"]
+                bx, by, bw, bh = tf["bbox"]
+                # regions[name] 保留为轴对齐外接框(下游工具兼容解包)
+                out_regions[name] = (bx, by, bw, bh)
+                # 记录真实旋转矩形信息(裁剪摆正/绘制旋转框用)
+                rot_info[name] = (cx, cy, tw, th, ang)
+        else:
+            out_regions = regions
+
+        # 结果写回 context:下游工具的 _get_input_image 依 region_rot 决定
+        # 是否旋转摆正裁剪。
+        context.regions.update(out_regions)
+        context.region_rot.update(rot_info)
+
         display = img.copy()
         # 在黑色背景上绘制标注，用于叠加到原图
         overlay = np.zeros_like(img)
-        for name, (x, y, w, h) in regions.items():
-            cv2.rectangle(display, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(display, name, (x, y - 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(overlay, name, (x, y - 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        for name in out_regions:
+            if name in rot_info:
+                cx, cy, tw, th, ang = rot_info[name]
+                from vision.geometry_util import draw_rotated_rect
+                draw_rotated_rect(display, cx, cy, tw, th, ang,
+                                  color=(0, 255, 0), thickness=2)
+                draw_rotated_rect(overlay, cx, cy, tw, th, ang,
+                                  color=(0, 255, 0), thickness=2)
+                cv2.putText(display, name, (int(cx - tw / 2), int(cy - th / 2 - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                cv2.putText(overlay, name, (int(cx - tw / 2), int(cy - th / 2 - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            else:
+                x, y, w, h = out_regions[name]
+                cv2.rectangle(display, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(display, name, (x, y - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(overlay, name, (x, y - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
+        # 注意:processed_image 保持原图(不绘制),避免污染下游
         return ToolResult(
             success=True,
             passed=True,
-            # processed_image 返回原始图像（不绘制 ROI 框），避免污染后续步骤输入
             processed_image=img,
             overlay_image=overlay,
-            regions=regions,
-            data={"region_count": len(regions)},
-            message=f"定义了 {len(regions)} 个ROI区域"
+            regions=out_regions,
+            data={
+                "region_count": len(out_regions),
+                "followed": bool(rot_info),
+                "angle_deg": float(loc.get("angle_deg", 0.0)) if loc else 0.0,
+                # 随动后的实际区域几何:供标注层按真实位置绘制旋转框
+                "actual_regions": {name: out_regions[name]
+                                   for name in out_regions},
+                "actual_rot": dict(rot_info),
+            },
+            message=f"定义了 {len(out_regions)} 个ROI区域"
+                    + ("(已随定位旋转/平移)" if rot_info else "")
         )
 
     def get_param_widgets(self, parent):
