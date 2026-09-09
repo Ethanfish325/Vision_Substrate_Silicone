@@ -238,8 +238,12 @@ def crop_points_to_frame(contour: np.ndarray,
     # 像素中心坐标:像素 (u,v) 的中心是 (u+0.5, v+0.5)
     u = pts[:, 0] + 0.5 - crop_w / 2.0
     v = pts[:, 1] + 0.5 - crop_h / 2.0
-    x = cx + u * cos_a - v * sin_a
-    y = cy + u * sin_a + v * cos_a
+    # 与 crop_rotated_rect 的裁剪方向互逆:裁剪用 getRotationMatrix2D(-a),
+    # 其前向矩阵为 [cos,-sin;sin,cos];回投要用其逆 = [cos,sin;-sin,cos]
+    # (即内容旋转 R_fwd(+a))。旧实现误用了 [cos,-sin;sin,cos],导致描边旋转
+    # 方向与内容相反(镜像)——已修复。
+    x = cx + u * cos_a + v * sin_a
+    y = cy - u * sin_a + v * cos_a
     out = np.stack([x, y], axis=-1).reshape(-1, 1, 2)
     return np.round(out).astype(np.int32)
 
