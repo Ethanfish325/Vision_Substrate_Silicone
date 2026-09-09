@@ -54,6 +54,31 @@ def _encode_png_bgr(img_bgr: np.ndarray) -> str:
     return base64.b64encode(buf.tobytes()).decode("ascii")
 
 
+def _encode_jpg_bgr(img_bgr: np.ndarray, quality: int = 88) -> str:
+    """把 BGR 参考图编码为 JPEG base64(体积更小,用于还原配置底图)。
+
+    参考图仅用于配置时还原"框选底图",运行时不需要,因此用有损 JPEG
+    即可(不影响模板本身,模板仍用无损 PNG 存储)。
+    """
+    ok, buf = cv2.imencode(".jpg", img_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise ValueError("参考图编码失败")
+    return base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+def _decode_jpg_bgr(b64: str) -> Optional[np.ndarray]:
+    """从 JPEG base64 解码为 BGR 图。"""
+    if not b64:
+        return None
+    try:
+        raw = base64.b64decode(b64)
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    except Exception as e:  # noqa: BLE001
+        log_error(f"解码参考图失败: {e}")
+        return None
+
+
 def _decode_png_bgr(b64: str) -> Optional[np.ndarray]:
     """从 PNG base64 解码为 BGR 图。"""
     if not b64:
@@ -101,7 +126,23 @@ class PositionCorrect(VisionTool):
         self.params.setdefault("angle_max", 10)
         self.params.setdefault("angle_step", 2)
         self.params.setdefault("threshold", 0.7)
+        # 参考图(JPEG b64):仅配置期用作"框选底图"还原,运行时不用
+        self.params.setdefault("ref_image_b64", "")
         self._template_cache: Optional[np.ndarray] = None
+
+    # ── 参考图(配置底图)──
+
+    def set_reference_image(self, image_bgr: np.ndarray):
+        """保存参考图(标准摆放照片),供配置界面再次打开时还原框选底图。
+
+        参考图仅用于配置:工程师在它上面框选基准;方案保存时随模板一起
+        写入 JSON(JPEG 压缩,体积较小),运行时不需要它。
+        """
+        self.params["ref_image_b64"] = _encode_jpg_bgr(image_bgr)
+
+    def get_reference_image(self) -> Optional[np.ndarray]:
+        """取回参考图(若已保存)。"""
+        return _decode_jpg_bgr(self.params.get("ref_image_b64", ""))
 
     # ── 模板读写 ──
 

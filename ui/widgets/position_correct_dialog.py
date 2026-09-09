@@ -35,8 +35,16 @@ class PositionCorrectDialog(QDialog):
                  parent=None):
         super().__init__(parent)
         self.tool = tool
-        # 允许无预览图启动(仅显示参数),有图时可框选
-        self.original_image = None if preview_image is None else preview_image.copy()
+        # 优先用模板内保存的参考图(还原上次配置的框选底图);
+        # 没有则退回当前预览图(可能是相机画面/测试图)。
+        saved_ref = tool.get_reference_image()
+        if saved_ref is not None:
+            self.original_image = saved_ref
+            self._image_source = "已保存的参考图"
+        else:
+            self.original_image = None if preview_image is None \
+                else preview_image.copy()
+            self._image_source = "当前画面"
         self._candidate = None      # 当前框选的基准 (dict: x/y/w/h)
 
         self.setWindowTitle("位置修正配置 - 框选定位基准")
@@ -64,9 +72,14 @@ class PositionCorrectDialog(QDialog):
         left.addWidget(self.canvas, 1)
 
         btn_row = QHBoxLayout()
-        self.btn_load = QPushButton("📷 载入参考图(标准摆放照片)")
-        self.btn_load.clicked.connect(self._on_load_ref)
-        btn_row.addWidget(self.btn_load)
+        self.btn_load_file = QPushButton("📁 载入参考图")
+        self.btn_load_file.setToolTip("从图片文件载入标准摆放照片作为框选底图")
+        self.btn_load_file.clicked.connect(self._on_load_file)
+        btn_row.addWidget(self.btn_load_file)
+        self.btn_use_camera = QPushButton("📷 用相机当前画面作基准图")
+        self.btn_use_camera.setToolTip("相机已打开时,把当前采集画面作为框选底图(标准摆放)")
+        self.btn_use_camera.clicked.connect(self._on_use_camera)
+        btn_row.addWidget(self.btn_use_camera)
         btn_row.addStretch()
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color:#4fc3f7;")
@@ -94,6 +107,7 @@ class PositionCorrectDialog(QDialog):
         self.rot_mode.addItem("仅0°(无翻转)", "0")
         self.rot_mode.addItem("0°/180°翻转", "0and180")
         self.rot_mode.addItem("小角度范围", "range")
+        self.rot_mode.addItem("任意角度(全周,较慢)", "any")
         self.rot_mode.currentIndexChanged.connect(self._on_mode_changed)
         gl.addWidget(self.rot_mode, 0, 1)
 
@@ -152,7 +166,12 @@ class PositionCorrectDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _load_from_params(self):
-        """把 tool.params 读入 UI。"""
+        """把 tool.params 读入 UI。
+
+        注意:此时 _candidate 是从参数还原的"已有基准框"。为了与"只调
+        参数不重框基准"解耦,保存时只有【用户新载图后新框选】才重写模板;
+        还原的旧候选仅在用户主动拖框覆盖后才更新模板。
+        """
         p = self.tool.params
         mode = p.get("rot_mode", "0and180")
         idx = self.rot_mode.findData(mode)
@@ -169,11 +188,16 @@ class PositionCorrectDialog(QDialog):
                 "w": int(p.get("ref_w", 0)), "h": int(p.get("ref_h", 0)),
                 "enabled": True,
             }
+            # 该候选来自已保存模板:重开对话框不应静默重写模板
+            self._candidate["_loaded"] = True
             self.summary.setText(
-                f"基准已配置: 位置({int(p.get('ref_x',0))}, {int(p.get('ref_y',0))}) "
+                f"基准已配置(可直接改参数后确定): "
+                f"位置({int(p.get('ref_x',0))}, {int(p.get('ref_y',0))}) "
                 f"尺寸 {p.get('ref_w')}×{p.get('ref_h')}px;"
-                f" 旋转模式={mode}")
+                f" 旋转模式={mode}\n"
+                f"如需更换基准,请重新载入/拍摄底图并在特征上拖框。")
         self._on_mode_changed()
+        self._set_source_hint()
 
     def _sync_ui_to_canvas(self):
         """把当前基准框同步到画布,供画布钩子回调。"""
@@ -198,9 +222,11 @@ class PositionCorrectDialog(QDialog):
             r = self.canvas.regions[idx]
             if r["w"] >= 8 and r["h"] >= 8:
                 self._candidate = dict(r)
+                # 用户主动新框选 → 保存时重写模板
+                self._candidate["_loaded"] = False
                 self.summary.setText(
-                    f"基准框: 位置({r['x']}, {r['y']}) 尺寸 {r['w']}×{r['h']}px")
-                self.status_label.setText("已框选基准 ✔")
+                    f"基准框(新): 位置({r['x']}, {r['y']}) 尺寸 {r['w']}×{r['h']}px")
+                self.status_label.setText("已框选基准 ✔ (保存时更新)")
             else:
                 del self.canvas.regions[idx]
                 self.canvas.update()
@@ -215,29 +241,60 @@ class PositionCorrectDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _on_mode_changed(self):
-        is_range = self.rot_mode.currentData() == "range"
+        mode = self.rot_mode.currentData()
+        is_range = mode == "range"
         for w in (self.angle_range_label, self.angle_min,
                   self.angle_max, self.angle_step):
             w.setVisible(is_range)
+        # any 模式用固定两级搜索(粗 30° + 细 2°),无需界面参数
 
-    def _on_load_ref(self):
-        # 优先用宿主相机抓帧;否则文件选择
-        img = self._try_capture()
+    def _set_source_hint(self):
+        if self.original_image is not None:
+            h, w = self.original_image.shape[:2]
+            self.status_label.setText(f"底图: {self._image_source} ({w}×{h})"
+                                      + ("  在特征上拖框框选基准"
+                                         if self._candidate is None else
+                                         "  ✔ 已框选基准"))
+        else:
+            self.status_label.setText("尚未载入基准图,请先选择图片来源")
+
+    # 来源:图片文件 / 相机当前画面(统一入口)
+    def _set_reference_source(self, img: Optional[np.ndarray],
+                              source_label: str) -> bool:
         if img is None:
-            path, _ = QFileDialog.getOpenFileName(
-                self, "选择参考图(标准摆放照片)", "",
-                "图像 (*.png *.jpg *.jpeg *.bmp);;所有文件 (*)")
-            if not path:
-                return
-            img = cv2.imdecode(np.fromfile(path, dtype=np.uint8),
-                               cv2.IMREAD_COLOR)
-            if img is None:
-                QMessageBox.warning(self, "错误", "无法读取参考图")
-                return
+            return False
         self.original_image = img.copy()
+        self._image_source = source_label
         self._candidate = None
+        # 记录底图来源与参考图(保存后重开可还原)
+        self.tool.set_reference_image(self.original_image)
         self.summary.setText("请在特征上拖框框选基准")
         self._sync_ui_to_canvas()
+        self._set_source_hint()
+        return True
+
+    def _on_load_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择参考图(标准摆放照片)", "",
+            "图像 (*.png *.jpg *.jpeg *.bmp);;所有文件 (*)")
+        if not path:
+            return
+        img = cv2.imdecode(np.fromfile(path, dtype=np.uint8),
+                           cv2.IMREAD_COLOR)
+        if img is None:
+            QMessageBox.warning(self, "错误", "无法读取参考图")
+            return
+        self._set_reference_source(img, os.path.basename(path))
+
+    def _on_use_camera(self):
+        """把相机当前采集画面作为基准图(标准摆放)。"""
+        img = self._try_capture()
+        if img is None:
+            QMessageBox.warning(
+                self, "相机不可用",
+                "未能从相机获取画面。请先在主界面打开相机,或改用「载入参考图」。")
+            return
+        self._set_reference_source(img, "相机画面(需产品处于标准摆放位)")
 
     def _try_capture(self):
         win = self.window()
@@ -259,19 +316,23 @@ class PositionCorrectDialog(QDialog):
         return None
 
     def _on_preview(self):
-        """用当前框选结果试运行(若已配置模板与图像)。"""
-        if self._candidate is None:
-            QMessageBox.information(self, "提示", "请先在参考图上框选基准")
+        """用当前参数对底图试运行,验证定位(score/角度)。"""
+        has_template = bool(self.tool.params.get("template_b64"))
+        if self._candidate is None and not has_template:
+            QMessageBox.information(
+                self, "提示",
+                "请先「📷 用相机当前画面作基准图」或「📁 载入参考图」"
+                "并框选基准,再试运行。")
             return
         if self.original_image is None:
             return
-        # 用当前对话框参数暂存试运行(不落 params)
+        # 写入当前参数(新框选才重写模板;还原基准仅更新参数)
         if not self._apply_params():
             QMessageBox.warning(self, "基准无效",
                                 "框选区域几乎无纹理(纯色板面/底色),无法定位。\n"
                                 "请框选产品上的稳定特征(板角/丝印/mark/定位孔)。")
             return
-        # 对参考图本身试运行:应 score≈1 且角度≈0
+        # 对当前底图试运行
         from vision.pipeline import PipelineContext
         from vision.tools.position import PositionCorrect
         tmp = PositionCorrect()
@@ -284,7 +345,6 @@ class PositionCorrectDialog(QDialog):
                 self.status_label.setText(
                     f"试运行: 定位成功 score={res.data.get('score'):.2f} "
                     f"角度={res.data.get('angle_deg'):.0f}°")
-                self._show_image(res.processed_image)
             else:
                 self.status_label.setText(
                     f"试运行: 定位失败 {res.message}")
@@ -310,10 +370,13 @@ class PositionCorrectDialog(QDialog):
             self.status_label.setText(f"显示异常: {e}")
 
     def _apply_params(self) -> bool:
-        """把 UI 状态写入 tool.params。
+        """把 UI 参数写入 tool.params;若用户新框选基准则重写模板。
 
-        Returns:
-            True=模板与参数已写入;False=框选区域为纯色/无特征(未写入)。
+        解耦逻辑(问题6):
+            - 仅调整 旋转模式/阈值/角度 → 不动 template_b64(已存模板保留);
+            - 新载底图并重新框选(_candidate 非 _loaded) → 才重裁模板;
+            - 还原的旧基准(_loaded=True)且未重框 → 只写位置/尺寸等,
+              不覆盖模板图。
         """
         p = self.tool.params
         p["rot_mode"] = self.rot_mode.currentData()
@@ -321,9 +384,11 @@ class PositionCorrectDialog(QDialog):
         p["angle_min"] = int(self.angle_min.value())
         p["angle_max"] = int(self.angle_max.value())
         p["angle_step"] = float(self.angle_step.value())
+
         if self._candidate is None:
-            return True   # 仅参数(未框选)先放行,由确定时拦截
-        c = self._candidate
+            # 无任何基准(未载图/未框选):仅参数已更新;由确定处提示
+            return True
+        c = dict(self._candidate)   # copy,不污染画布引用
         if self.original_image is not None:
             h, w = self.original_image.shape[:2]
             c["x"] = max(0, min(int(c["x"]), w - 1))
@@ -332,31 +397,45 @@ class PositionCorrectDialog(QDialog):
             c["h"] = max(4, min(int(c["h"]), h - c["y"]))
         p["ref_x"], p["ref_y"] = int(c["x"]), int(c["y"])
         p["ref_w"], p["ref_h"] = int(c["w"]), int(c["h"])
-        if self.original_image is None:
+
+        # 参考图(底图)始终跟随 current 底图保存(便于还原),不影响模板
+        if self.original_image is not None:
+            self.tool.set_reference_image(self.original_image)
+
+        # 只有"用户新框选"才重写模板;从已存模板还原且未重框时保留原模板
+        if self._candidate.get("_loaded"):
             return True
+        if self.original_image is None:
+            return True   # 理论不可达(重框需底图),兜底
         templ = self.original_image[c["y"]:c["y"] + c["h"],
                                     c["x"]:c["x"] + c["w"]].copy()
-        # 模板去噪(轻微高斯)提升匹配稳定性
-        templ = cv2.GaussianBlur(templ, (3, 3), 0)
-        # set_template 内部会拒绝纯色/低纹理基准并返回 False
+        templ = cv2.GaussianBlur(templ, (3, 3), 0)  # 轻微去噪
         ok = self.tool.set_template(templ, int(c["x"]), int(c["y"]))
         if not ok:
             self.status_label.setText(
                 "✗ 基准无特征(纯色板面/底色)——请框选板上稳定特征(板角/丝印/mark)")
             self.summary.setText(
                 "基准无效: 框内几乎无纹理,匹配会失败。请改框特征区域。")
+        else:
+            self.summary.setText(
+                f"基准已更新: ({c['x']}, {c['y']}) {c['w']}×{c['h']}px")
         return ok
 
     def _on_ok(self):
-        if self._candidate is None or self.original_image is None:
-            QMessageBox.warning(self, "提示", "请先载入参考图并框选基准")
+        # 情形A:从未有基准 → 必须载底图并框选(仅参数无意义)
+        has_template = bool(self.tool.params.get("template_b64"))
+        if self._candidate is None and not has_template:
+            QMessageBox.warning(
+                self, "提示",
+                "尚未配置定位基准。\n请先「📷 用相机当前画面作基准图」或"
+                "「📁 载入参考图」,然后在产品稳定特征(板角/丝印/mark)上拖框框选。")
             return
         try:
             ok = self._apply_params()
             if not ok:
                 QMessageBox.warning(
                     self, "基准无效",
-                    "框选区域几乎无纹理(纯色板面/底色),无法用于定位。\n"
+                    "新框选的区域几乎无纹理(纯色板面/底色),无法用于定位。\n"
                     "请框选产品上的稳定特征(板角/丝印/mark/定位孔),再点确定。")
                 return
         except Exception as e:  # noqa: BLE001
