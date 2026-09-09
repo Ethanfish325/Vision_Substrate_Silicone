@@ -203,16 +203,42 @@ class ColorRecognition(VisionTool):
             overlay = np.zeros_like(self._full_frame_image)
             region_name = input_source[7:]
             if region_name in context.regions:
-                rx, ry, rw, rh = context.regions[region_name]
-                # 将 ROI 内的标注绘制到完整帧 overlay 的对应位置
+                rx, ry, rw_, rh_ = context.regions[region_name]
+                # ROI 随动:若该区域经 crop_rotated_rect 摆正裁剪(旋转矩形),
+                # 轮廓坐标需按 +angle 绕区域中心逆旋转回投,不能只平移 bbox,
+                # 否则识别描边相对实际区域会"旋转错位"(镜像 base_tool 分支:
+                # 非轴对齐且区域出界时 base_tool 回退外接框普通裁剪 → 仅平移)。
+                from vision.geometry_util import (is_axis_aligned,
+                                                  crop_points_to_frame)
+                rot = context.region_rot.get(region_name)
+                rot_back = None
+                if rot is not None:
+                    rcx, rcy, rr_w, rr_h, rang = rot
+                    axis = is_axis_aligned(rang)
+                    need_rot = (not axis) or abs(rang) > 1e-3
+                    if need_rot and not axis:
+                        fh, fw = self._full_frame_image.shape[:2]
+                        inside = (rcx - rr_w / 2 > 0 and rcy - rr_h / 2 > 0
+                                  and rcx + rr_w / 2 < fw
+                                  and rcy + rr_h / 2 < fh)
+                        if not inside:
+                            need_rot = False
+                    if need_rot:
+                        rot_back = (float(rcx), float(rcy), float(rang))
+                # 将轮廓坐标从 ROI 局部坐标转换为完整帧坐标
                 for cnt in contours:
                     area = cv2.contourArea(cnt)
                     if area >= min_area:
-                        # 将轮廓坐标从 ROI 局部坐标转换为完整帧坐标
-                        cnt_full = cnt.copy()
-                        cnt_full[:, :, 0] += rx
-                        cnt_full[:, :, 1] += ry
-                        cv2.drawContours(overlay, [cnt_full], -1, (0, 255, 0), 2)
+                        if rot_back is not None:
+                            cnt_full = crop_points_to_frame(
+                                cnt, img.shape[1], img.shape[0],
+                                rot_back[0], rot_back[1], rot_back[2])
+                        else:
+                            cnt_full = cnt.copy()
+                            cnt_full[:, :, 0] += rx
+                            cnt_full[:, :, 1] += ry
+                        cv2.drawContours(overlay, [cnt_full], -1,
+                                         (0, 255, 0), 2)
                         x, y, w, h = cv2.boundingRect(cnt_full)
                         cv2.putText(overlay, f"#{valid_count}", (x, y-5),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)

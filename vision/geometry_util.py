@@ -202,6 +202,39 @@ def draw_rotated_rect(image: np.ndarray,
                   color=color, thickness=thickness, lineType=cv2.LINE_AA)
 
 
+def crop_points_to_frame(contour: np.ndarray,
+                         crop_w: int, crop_h: int,
+                         cx: float, cy: float,
+                         angle_deg: float) -> np.ndarray:
+    """把"摆正裁剪图"里的轮廓点映射回原图像坐标(ROI 随动逆变换)。
+
+    crop_rotated_rect() 把以 (cx,cy) 为中心、旋转 angle_deg 的矩形区域
+    旋转 -angle_deg 摆正后取出;因此裁剪图局部坐标 → 原图的逆映射是
+    绕 (cx,cy) 旋转 +angle_deg:
+        原图点 = (cx,cy) + R(+angle) · (裁剪局部点 - 裁剪中心)
+
+    Args:
+        contour: 裁剪图局部坐标轮廓(shape N×1×2 或 N×2)
+        crop_w, crop_h: 裁剪图宽高(用于求局部中心)
+        cx, cy: 旋转矩形中心(原图坐标,即 region_rot 的中心)
+        angle_deg: 内容相对水平旋转角(即 region_rot 的角度)
+
+    Returns:
+        原图坐标轮廓(N×1×2,int32)。用于把识别到的区域/描边正确回投到整帧,
+        避免"只平移不回投旋转"导致的描边错位。
+    """
+    pts = np.asarray(contour, dtype=np.float64).reshape(-1, 2)
+    a = np.deg2rad(float(angle_deg))
+    cos_a, sin_a = np.cos(a), np.sin(a)
+    # 像素中心坐标:像素 (u,v) 的中心是 (u+0.5, v+0.5)
+    u = pts[:, 0] + 0.5 - crop_w / 2.0
+    v = pts[:, 1] + 0.5 - crop_h / 2.0
+    x = cx + u * cos_a - v * sin_a
+    y = cy + u * sin_a + v * cos_a
+    out = np.stack([x, y], axis=-1).reshape(-1, 1, 2)
+    return np.round(out).astype(np.int32)
+
+
 def transform_point(matrix2x3, x: float, y: float) -> Tuple[float, float]:
     """把点 (x,y) 用 2x3 仿射矩阵变换(齐次坐标)。"""
     m = np.asarray(matrix2x3, dtype=np.float64)
