@@ -188,14 +188,23 @@ def draw_rotated_rect(image: np.ndarray,
                       angle_deg: float,
                       color=(0, 255, 255),
                       thickness: int = 2) -> None:
-    """在图上画旋转矩形(用于标注随动 ROI 与匹配结果)。"""
+    """在图上画旋转矩形(用于标注随动 ROI 与匹配结果)。
+
+    角度约定与 crop_rotated_rect / transform_region 一致:angle_deg 是"内容
+    相对水平的实际旋转角",即内容是用 getRotationMatrix2D(+angle_deg) 旋转
+    出的样子。因此四个角点必须用与 getRotationMatrix2D 相同的前向矩阵
+    [cos, sin; -sin, cos] 变换,框才会和内容同向。
+
+    注意:旧实现用了 [cos, -sin; sin, cos](即 getRotationMatrix2D 的逆方向),
+    导致框旋转方向与内容相反(镜像,视觉上"框歪/方向反了")——已修复。
+    """
     a = np.deg2rad(float(angle_deg))
     cos_a, sin_a = np.cos(a), np.sin(a)
     hw, hh = w / 2.0, h / 2.0
     corners = []
     for dxs, dys in [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]:
-        px = cx + dxs * cos_a - dys * sin_a
-        py = cy + dxs * sin_a + dys * cos_a
+        px = cx + dxs * cos_a + dys * sin_a
+        py = cy - dxs * sin_a + dys * cos_a
         corners.append((int(round(px)), int(round(py))))
     pts = np.array(corners, np.int32).reshape(-1, 1, 2)
     cv2.polylines(image, [pts], isClosed=True,
