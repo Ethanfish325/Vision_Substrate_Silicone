@@ -103,12 +103,20 @@ def crop_rotated_rect(image: np.ndarray,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=(0, 0, 0) if len(image.shape) == 3 else 0)
 
-    # 摆正后目标 w×h 仍位于块中心(旋转围绕块中心,中心不动)
-    tx0 = int(round(cw / 2.0 - w / 2))
-    ty0 = int(round(ch / 2.0 - h / 2))
-    tx1 = int(round(cw / 2.0 + w / 2))
-    ty1 = int(round(ch / 2.0 + h / 2))
-    out = _blank_like(image, w, h)
+    # 摆正后目标 rw×rh 仍位于块中心(旋转围绕块中心,中心不动)。
+    # 注意:两端各自 round 可能使区间宽/高比 round(w)/round(h) 大 1
+    # (如 h=371、边长偶 564 时 round(282±185.5)=96..468 → 高 372),
+    # 而输出画布只有 round(h) 行 → 赋值时目标切片被截断导致
+    # "could not broadcast (372,…) into (371,…)"。因此先定起点,再按
+    # round(w)×round(h) 定终点,保证尺寸恒与输出画布一致(中心偏差 ≤0.5px,
+    # 对检测无影响)。
+    rw = max(1, int(round(w)))
+    rh = max(1, int(round(h)))
+    tx0 = int(round(cw / 2.0 - w / 2.0))
+    ty0 = int(round(ch / 2.0 - h / 2.0))
+    tx1 = tx0 + rw
+    ty1 = ty0 + rh
+    out = _blank_like(image, rw, rh)
     sx0 = max(0, tx0)
     sy0 = max(0, ty0)
     sx1 = min(cw, tx1)
