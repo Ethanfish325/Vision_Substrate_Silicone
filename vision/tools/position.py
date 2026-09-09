@@ -45,6 +45,26 @@ from core.log_manager import log_info, log_error, log_warning
 # 若图像变化导致模板需要按比例缩放时的上限(与 TemplateMatch 约定一致)
 MAX_TEMPLATE_LONG_SIDE = 600
 
+# any(全角度)模式防伪峰参数:
+#   粗扫 30° 步进对"大面积均匀板面"可能出现伪峰:整图旋转后,板边/边角在
+#   旋转图上形成的"伪 L"轮廓(粗形状相似但对比度/细节不同)分数可高达
+#   0.93,超过真实但倾斜 7° 的粗扫分数 0.86——若只相信粗扫 argmax 会在
+#   错误盆地细扫,漏掉真实角度。
+#   对策:按粗扫分数从高到低探索前 ANY_BASIN_LIMIT 个盆地细扫,并对每个
+#   细扫候选用"原图内容还原 + 亮度归一化逐像素距离"校验真伪:
+#     ANY_BASIN_LIMIT   — 最多细扫的粗扫盆地数(控制最坏耗时)
+#     ANY_VERIFY_ACCEPT_D — 内容距离 ≤ 该值 ≈ 像素级一致,直接接受
+#     ANY_VERIFY_REL    — 相对判据:最小距离 ≤ 次小 × 该比例 → 显著最真实
+#     ANY_VERIFY_ABS_MAX — 相对判据成立时最小距离的绝对上限
+#   说明:TM_CCOEFF 只对"形状相关"敏感,伪 L 也能给 ~0.93 高分;逐像素
+#   差异对细节错位更敏感,伪 L 还原区与模板距离明显更大(合成板实测 ~5 vs
+#   真实 ~2),能可靠区分。校验仅为"粗筛",决策还会综合多盆地相对距离,
+#   全部无法确认时退回细扫最高分(与原行为一致)。
+ANY_BASIN_LIMIT = 3
+ANY_VERIFY_ACCEPT_D = 4.5
+ANY_VERIFY_REL = 0.6
+ANY_VERIFY_ABS_MAX = 7.0
+
 
 def _encode_png_bgr(img_bgr: np.ndarray) -> str:
     """把 BGR 图编码为 PNG base64(用于存入方案 JSON)。"""
@@ -244,35 +264,166 @@ class PositionCorrect(VisionTool):
         return [0.0]
 
     def _match_any_angle(self, gray_img: np.ndarray, templ_gray: np.ndarray,
-                         threshold: float):
-        """全角度两级搜索:先粗扫 30°,再在最优角附近 ±20° 细扫。
+                         threshold: float,
+                         verify_templ_gray: Optional[np.ndarray] = None):
+        """全角度两级搜索:粗扫 30° 后细扫,并用原图内容校验防伪峰。
+
+        Args:
+            gray_img: 输入灰度图(全分辨率)
+            templ_gray: 匹配用模板(可能已被缩放)
+            threshold: 匹配分数阈值(仅与调用方一致,本方法内不使用)
+            verify_templ_gray: 未缩放模板(尺寸 == 参考 ref_w×ref_h),
+                用于候选真实性校验;为 None 时不校验(退化为纯两级搜索)。
 
         Returns:
             (best_score, best_angle, best_loc)
         """
-        best_score, best_angle, best_loc = -2.0, 0.0, (0, 0)
         # ── 第一级:粗扫 ──
+        coarse = []
         for angle in self._candidate_angles(fine=False):
             score, loc = self._match_at_angle(gray_img, templ_gray, angle)
-            if score > best_score:
-                best_score, best_angle, best_loc = score, angle, loc
+            coarse.append((float(score), float(angle), loc))
+        coarse.sort(key=lambda c: c[0], reverse=True)
 
-        # ── 第二级:在粗扫最优角附近细扫 ──
-        fine_angles = []
-        center_angle = float(best_angle)
-        a = center_angle - 20.0
-        while a <= center_angle + 20.0 + 1e-6:
+        best_score, best_angle, best_loc = coarse[0]
+        # ── 第二级:按粗扫分数从高到低探索盆地,细扫 + 原图内容校验 ──
+        dists = []  # (内容距离, 候选):距离越小越像模板真实内容
+        for _, angle, _ in coarse[:ANY_BASIN_LIMIT]:
+            cand = self._fine_around(gray_img, templ_gray, angle)
+            if cand[0] > best_score:
+                best_score, best_angle, best_loc = cand
+            if verify_templ_gray is not None:
+                geom = self._geometry(gray_img.shape[1], gray_img.shape[0],
+                                      cand[1], cand[2])
+                d = self._content_distance(gray_img, verify_templ_gray,
+                                           cand[1], cand[2], geom)
+                if d is not None:
+                    if d <= ANY_VERIFY_ACCEPT_D:
+                        # 还原区与模板几乎像素级一致 → 真实候选,直接接受
+                        return cand
+                    dists.append((d, cand))
+        # 无"像素级一致"候选:若某候选的内容距离显著小于其它候选,取它;
+        # 否则退回细扫最高分(保持原两级搜索行为)
+        if len(dists) >= 2:
+            dists.sort(key=lambda x: x[0])
+            d0, cand0 = dists[0]
+            d1 = dists[1][0]
+            if d0 <= ANY_VERIFY_ABS_MAX and d0 <= d1 * ANY_VERIFY_REL:
+                return cand0
+        return best_score, best_angle, best_loc
+
+    def _fine_around(self, gray_img: np.ndarray, templ_gray: np.ndarray,
+                     center_angle: float):
+        """在 center_angle ±20° 内以 2° 步进细扫,返回 (score, angle, loc)。"""
+        best = (-2.0, float(center_angle), (0, 0))
+        seen = set()
+        a = float(center_angle) - 20.0
+        while a <= float(center_angle) + 20.0 + 1e-6:
             fa = round(float(a) % 360.0, 3)
             if fa > 180:
                 fa -= 360.0
-            fine_angles.append(fa)
+            if fa not in seen:
+                seen.add(fa)
+                score, loc = self._match_at_angle(gray_img, templ_gray, fa)
+                if score > best[0]:
+                    best = (score, fa, loc)
             a += 2.0
-        for angle in sorted(set(fine_angles)):
-            score, loc = self._match_at_angle(gray_img, templ_gray, angle)
-            if score > best_score:
-                best_score, best_angle, best_loc = score, angle, loc
+        return best
 
-        return best_score, best_angle, best_loc
+    def _geometry(self, img_w: int, img_h: int, best_angle: float,
+                  best_loc) -> dict:
+        """把匹配结果换算为报告量(dx/dy/角度)与中间几何量(纯计算,无副作用)。
+
+        语义:best_angle 是"把当前图旋转该角度后模板即水平"的校正量;
+        best_loc 是该旋转后图上模板左上角。参考模板中心 (ref_cx, ref_cy)
+        在校正后图上应回到参考位置,因此平移量 tx/ty = 参考中心 - 匹配中心。
+        """
+        ref_w = int(self.params.get("ref_w", 0))
+        ref_h = int(self.params.get("ref_h", 0))
+        ref_cx = float(self.params.get("ref_x", 0)) + ref_w / 2.0
+        ref_cy = float(self.params.get("ref_y", 0)) + ref_h / 2.0
+        loc_cx = float(best_loc[0]) + ref_w / 2.0
+        loc_cy = float(best_loc[1]) + ref_h / 2.0
+        tx = ref_cx - loc_cx
+        ty = ref_cy - loc_cy
+        # 报告语义:产品相对参考的偏移(与校正量符号相反)
+        dx, dy = -tx, -ty
+        angle_deg = -float(best_angle)
+        while angle_deg > 180:
+            angle_deg -= 360
+        while angle_deg <= -180:
+            angle_deg += 360
+        return {"ref_cx": ref_cx, "ref_cy": ref_cy,
+                "loc_cx": loc_cx, "loc_cy": loc_cy,
+                "tx": tx, "ty": ty, "dx": dx, "dy": dy,
+                "angle_deg": float(angle_deg)}
+
+    def _build_location_matrix(self, img_w: int, img_h: int,
+                               best_angle: float, geom: dict):
+        """构造 参考→当前 的仿射矩阵 M_ref2cur 并算出当前锚点。
+
+        Returns:
+            (M_ref2cur, cur_x, cur_y) 或 (None, None, None)(矩阵不可逆)
+        """
+        center = ((img_w - 1) / 2.0, (img_h - 1) / 2.0)
+        M_corr = cv2.getRotationMatrix2D(center, float(best_angle), 1.0)
+        M_corr[0, 2] += geom["tx"]
+        M_corr[1, 2] += geom["ty"]
+        M3 = np.vstack([M_corr, [0.0, 0.0, 1.0]])
+        try:
+            M3_inv = np.linalg.inv(M3)
+        except np.linalg.LinAlgError:
+            return None, None, None
+        M_ref2cur = M3_inv[:2, :]
+        cur_pt = M_ref2cur @ np.array([geom["ref_cx"], geom["ref_cy"], 1.0])
+        return M_ref2cur, float(cur_pt[0]), float(cur_pt[1])
+
+    def _content_distance(self, gray_img: np.ndarray,
+                          templ_gray: np.ndarray,
+                          best_angle: float, best_loc, geom: dict):
+        """候选的"内容距离":候选几何在原图上还原的区域与模板的差异(越小越真实)。
+
+        按与 process() 完全相同的几何换算得到模板区域在当前图上的位置/角度,
+        裁剪摆正后做亮度归一化(把裁剪区均值/方差对齐到模板)再逐像素比较。
+        真实匹配的还原区就是模板本身 → 距离很小(实测 ~2);
+        旋转边框/边角形成的"伪 L"还原区细节错位 → 距离明显更大(实测 ~5)。
+
+        Returns:
+            内容距离(平均绝对灰度差,0~255),越小越像;
+            无法校验(模板被缩放/区域出界/还原区近乎纯色)时返回 None。
+        """
+        try:
+            from vision.geometry_util import crop_rotated_rect
+            ref_w = int(self.params.get("ref_w", 0))
+            ref_h = int(self.params.get("ref_h", 0))
+            if ref_w <= 0 or ref_h <= 0:
+                return None
+            # 模板被缩放时尺寸 != 参考尺寸,无法按原尺寸还原比对 → 跳过
+            if templ_gray.shape[1] != ref_w or templ_gray.shape[0] != ref_h:
+                return None
+            img_h, img_w = gray_img.shape[:2]
+            M, cx, cy = self._build_location_matrix(img_w, img_h,
+                                                    best_angle, geom)
+            if M is None:
+                return None
+            crop = crop_rotated_rect(gray_img, cx, cy, ref_w, ref_h,
+                                     geom["angle_deg"])
+            if crop is None or crop.size == 0:
+                return None
+            if crop.shape[0] != ref_h or crop.shape[1] != ref_w:
+                crop = cv2.resize(crop, (ref_w, ref_h),
+                                  interpolation=cv2.INTER_LINEAR)
+            crop_f = crop.reshape(-1).astype(np.float64)
+            templ_f = templ_gray.reshape(-1).astype(np.float64)
+            if crop.std() < 3.0:
+                # 还原区近乎纯色(伪峰常见),无法做有意义的逐像素比较
+                return None
+            # 亮度归一化:均值/方差对齐到模板,抵消照明差异后再比细节
+            crop_n = (crop_f - crop_f.mean()) * \
+                (templ_f.std() / crop_f.std()) + templ_f.mean()
+            return float(np.abs(crop_n - templ_f).mean())
+        except Exception:  # noqa: BLE001 校验失败不应影响主流程
+            return None
 
     def _match_at_angle(self, gray_img: np.ndarray, templ_gray: np.ndarray,
                         angle: float):
@@ -318,6 +469,8 @@ class PositionCorrect(VisionTool):
             templ_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
         else:
             templ_gray = template.copy()
+        # 未缩放模板(any 模式候选真实性校验用,尺寸 == 参考 ref_w×ref_h)
+        templ_gray_full = templ_gray
 
         img_h, img_w = gray_img.shape[:2]
         th, tw = templ_gray.shape[:2]
@@ -347,8 +500,10 @@ class PositionCorrect(VisionTool):
         # 产生 NaN 分数,导致小角度搜索失效(曾实测 angle 恒为 0)。
         try:
             if self.params.get("rot_mode", "0and180") == "any":
+                # 模板被缩放时锚点/校验几何近似,不做原图校验(退化为两级搜索)
+                verify_templ = templ_gray_full if scale_t == 1.0 else None
                 best_score, best_angle, best_loc = self._match_any_angle(
-                    gray_img, templ_gray, threshold)
+                    gray_img, templ_gray, threshold, verify_templ)
             else:
                 for angle in self._candidate_angles():
                     best_score_a, best_loc_a = self._match_at_angle(
@@ -363,30 +518,10 @@ class PositionCorrect(VisionTool):
                               processed_image=img.copy(), data={},
                               message=f"匹配失败: {e}")
 
-        # 参考中心(始终用模板未缩放的原尺寸)
-        ref_w = int(self.params.get("ref_w", 0))
-        ref_h = int(self.params.get("ref_h", 0))
-        ref_cx = self.params.get("ref_x", 0) + ref_w / 2.0
-        ref_cy = self.params.get("ref_y", 0) + ref_h / 2.0
-
-        # 校正所需的平移:把"旋转后图上模板中心"搬回"参考中心"。
-        # 模板缩放仅影响匹配用模板,原图左上角 = best_loc(缩放围绕 0,0),
-        # 模板中心按未缩放原尺寸 ref_w/ref_h 计算。
-        loc_cx = best_loc[0] + ref_w / 2.0
-        loc_cy = best_loc[1] + ref_h / 2.0
-        tx = ref_cx - loc_cx
-        ty = ref_cy - loc_cy
-
-        # 平移/角度报告(语义:产品相对参考姿态的偏移;符号与校正矩阵相反)
-        dx = -tx
-        dy = -ty
-        # 归一化角度显示(-180,180],取反:best_angle 是"校正旋转量",
-        # 报告为"产品相对参考旋转了多少"
-        angle_deg = -float(best_angle)
-        while angle_deg > 180:
-            angle_deg -= 360
-        while angle_deg <= -180:
-            angle_deg += 360
+        # 匹配结果 → 报告量(dx/dy/角度)与中间几何量
+        geom = self._geometry(img_w, img_h, float(best_angle), best_loc)
+        dx, dy = geom["dx"], geom["dy"]
+        angle_deg = geom["angle_deg"]
 
         if best_score < threshold:
             log_warning(f"位置修正未找到基准: score={best_score:.3f} < "
@@ -404,15 +539,9 @@ class PositionCorrect(VisionTool):
         # 构造 参考→当前 的仿射矩阵 M_ref2cur:
         #   校正矩阵 M_corr 满足  M_corr(P_cur) ≈ P_ref(把当前图校正回参考姿态)
         #   其逆即 参考→当前: P_cur = M_ref2cur(P_ref)
-        center = ((img_w - 1) / 2.0, (img_h - 1) / 2.0)
-        M_corr = cv2.getRotationMatrix2D(center, float(best_angle), 1.0)
-        M_corr[0, 2] += tx
-        M_corr[1, 2] += ty
-        # 求逆(2x3 -> 3x3 -> 逆 -> 2x3)
-        M3 = np.vstack([M_corr, [0.0, 0.0, 1.0]])
-        try:
-            M3_inv = np.linalg.inv(M3)
-        except np.linalg.LinAlgError:
+        M_ref2cur, cur_x, cur_y = self._build_location_matrix(
+            img_w, img_h, float(best_angle), geom)
+        if M_ref2cur is None:
             context.location = None
             return ToolResult(success=False, passed=False,
                               processed_image=img.copy(),
@@ -420,12 +549,8 @@ class PositionCorrect(VisionTool):
                                     "angle_deg": angle_deg, "dx": float(dx),
                                     "dy": float(dy)},
                               message="定位矩阵不可逆")
-        M_ref2cur = M3_inv[:2, :]
 
         # 定位结果:供 MultiROI 把参考 ROI 坐标变换为当前图实际区域
-        # 当前锚点 = M_ref2cur 作用于参考锚点(特征在当前图中的实际中心)
-        ref_pt = np.array([ref_cx, ref_cy, 1.0])
-        cur_pt = M_ref2cur @ ref_pt
         context.location = {
             "matched": True,
             "score": float(best_score),
@@ -433,29 +558,33 @@ class PositionCorrect(VisionTool):
             "dx": float(dx),
             "dy": float(dy),
             "matrix": M_ref2cur.tolist(),        # 2x3 仿射: 参考坐标 -> 当前图坐标
-            "ref_anchor_x": float(ref_cx),
-            "ref_anchor_y": float(ref_cy),
-            "cur_anchor_x": float(cur_pt[0]),
-            "cur_anchor_y": float(cur_pt[1]),
+            "ref_anchor_x": float(geom["ref_cx"]),
+            "ref_anchor_y": float(geom["ref_cy"]),
+            "cur_anchor_x": float(cur_x),
+            "cur_anchor_y": float(cur_y),
         }
 
         # ── overlay:标注匹配结果 ──
         overlay = np.zeros_like(img)
+        ref_w = int(self.params.get("ref_w", 0))
+        ref_h = int(self.params.get("ref_h", 0))
+        ref_cx = float(geom["ref_cx"])
+        ref_cy = float(geom["ref_cy"])
         # 绿框:参考基准位置(产品无偏移时特征应在的位置,角度 0)
-        self._draw_box(overlay, float(ref_cx), float(ref_cy),
+        self._draw_box(overlay, ref_cx, ref_cy,
                        ref_w + 6, ref_h + 6, 0.0,
                        (0, 255, 0), 2, label="基准")
         # 黄框:实际匹配位置(特征在当前图中的位置,带产品角度)
-        self._draw_box(overlay, float(cur_pt[0]), float(cur_pt[1]),
+        self._draw_box(overlay, float(cur_x), float(cur_y),
                        ref_w, ref_h, float(angle_deg),
                        (0, 255, 255), 2, label="匹配")
         # 偏移连线(洋红)
         cv2.line(overlay,
-                 (int(round(float(cur_pt[0]))), int(round(float(cur_pt[1])))),
-                 (int(round(float(ref_cx))), int(round(float(ref_cy)))),
+                 (int(round(float(cur_x))), int(round(float(cur_y)))),
+                 (int(round(ref_cx)), int(round(ref_cy))),
                  (255, 0, 255), 1, cv2.LINE_AA)
-        cv2.circle(overlay, (int(round(float(cur_pt[0]))),
-                             int(round(float(cur_pt[1])))), 4, (255, 0, 255), -1)
+        cv2.circle(overlay, (int(round(float(cur_x))),
+                             int(round(float(cur_y)))), 4, (255, 0, 255), -1)
 
         log_info(f"位置修正: score={best_score:.3f} 角度={angle_deg:.1f}° "
                  f"dx={dx:.1f} dy={dy:.1f} (ROI 随动)")
