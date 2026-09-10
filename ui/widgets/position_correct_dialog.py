@@ -292,27 +292,85 @@ class PositionCorrectDialog(QDialog):
         if img is None:
             QMessageBox.warning(
                 self, "相机不可用",
-                "未能从相机获取画面。请先在主界面打开相机,或改用「载入参考图」。")
+                "未能从相机获取画面。请先在主界面打开相机(或先拍一张),"
+                "或改用「📁 载入参考图」。")
             return
         self._set_reference_source(img, "相机画面(需产品处于标准摆放位)")
 
-    def _try_capture(self):
-        win = self.window()
-        cam = getattr(win, "camera_mgr", None)
-        if cam is None:
-            return None
+    def _find_host_window(self):
+        """找到持有 camera_mgr / _raw_image 的主窗口。
+
+        注意:这里**不能**用 self.window()——QDialog 自身就是顶层窗口,
+        self.window() 返回的是对话框自己,永远拿不到主窗口的 camera_mgr,
+        导致"当前相机画面作基准图"恒失败(即使相机已连接、拍照正常)。
+        因此沿 parent() 链查找(与 pipeline_editor._get_preview_image 一致),
+        再退回 QApplication 顶层窗口遍历。
+        """
+        parent = self.parent()
+        while parent is not None:
+            if hasattr(parent, "camera_mgr") or hasattr(parent, "_raw_image"):
+                return parent
+            parent = parent.parent()
         try:
-            if not (getattr(cam, "is_open", False) or getattr(cam, "is_connected", False)):
-                return None
-            if hasattr(cam, "capture_once"):
-                raw = cam.capture_once()
-                if isinstance(raw, tuple) and len(raw) == 4:
-                    from camera_manager import raw_to_opencv
-                    w, h, pt, data = raw
-                    return raw_to_opencv(data, w, h, pt)
-                return raw
-        except Exception as e:  # noqa: BLE001
-            log_warning(f"相机抓帧失败: {e}")
+            from PyQt5.QtWidgets import QApplication
+            for w in QApplication.topLevelWidgets():
+                if hasattr(w, "camera_mgr"):
+                    return w
+            for w in QApplication.topLevelWidgets():
+                if hasattr(w, "_raw_image"):
+                    return w
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    @staticmethod
+    def _raw_to_bgr(raw):
+        """把相机抓帧结果转成 BGR 图像(capture_once 返回 (w,h,pixel_type,bytes))。"""
+        if raw is None:
+            return None
+        if isinstance(raw, np.ndarray):
+            return raw
+        if isinstance(raw, (tuple, list)) and len(raw) == 4:
+            try:
+                from camera_manager import raw_to_opencv
+                w, h, pt, data = raw
+                return raw_to_opencv(data, w, h, pt)
+            except Exception as e:  # noqa: BLE001
+                log_warning(f"相机原始帧转 BGR 失败: {e}")
+        return None
+
+    def _try_capture(self):
+        """取"当前相机画面":优先实时抓帧,失败则用主窗口缓存的最新画面。
+
+        主窗口 MainWindow._raw_image 会在每帧回调/拍照/载图时更新,因此
+        相机已连接时总能拿到画面;抓帧失败(如触发模式下未发触发信号)
+        也不至于让功能不可用。
+        """
+        win = self._find_host_window()
+        if win is None:
+            log_warning("未找到主窗口,无法访问相机")
+            return None
+
+        cam = getattr(win, "camera_mgr", None)
+        if cam is not None:
+            try:
+                if getattr(cam, "is_open", False) and hasattr(cam, "capture_once"):
+                    img = self._raw_to_bgr(cam.capture_once(3000))
+                    if img is None and getattr(cam, "is_trigger_mode", False):
+                        # 触发模式下 get_image 会等待触发信号:补发一次软触发后重试
+                        if hasattr(cam, "trigger_once"):
+                            cam.trigger_once()
+                            img = self._raw_to_bgr(cam.capture_once(3000))
+                    if img is not None:
+                        return img
+            except Exception as e:  # noqa: BLE001
+                log_warning(f"相机抓帧失败: {e}")
+
+        # 兜底:主窗口缓存的最新画面(实时预览帧 / 最近一次拍照 / 载入的图)
+        cached = getattr(win, "_raw_image", None)
+        if cached is not None:
+            log_info("实时抓帧不可用,改用主窗口当前画面作为基准图")
+            return np.asarray(cached).copy()
         return None
 
     def _on_preview(self):
