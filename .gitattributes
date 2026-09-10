@@ -1,0 +1,16 @@
+# 统一换行符策略
+#
+# Windows 批处理(.bat/.cmd)必须使用 CRLF:cmd.exe 用 LF 会拆行乱解析,
+# 导致脚本"看似执行了"实则语句被当成命令报错(曾导致 build_32.bat 未真正构建)。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 可执行/资源类文件保持二进制处理
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.dll binary
+*.so binary
+*.pyd binary
+*.exe binary
