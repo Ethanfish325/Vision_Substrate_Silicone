@@ -577,17 +577,27 @@ gxipy               # 大恒 GalaxySDK（内置于项目 gxipy/ 目录）
 
 ## 打包说明
 
-使用 PyInstaller 打包为独立可执行文件：
+> ⚠️ **必须使用 32 位 Python 打包**。本项目依赖的 `GxIAPI.dll` / `DxImageProc.dll`（大恒相机 SDK）与 `smcsh_mbs.dll`（SMC6480 运控卡）都是 32 位（x86）；若用 64 位 Python 打包，程序启动时会报
+> `NameError: name 'dll' is not defined`（gxwrapper 加载 32 位 GxIAPI.dll 失败），运动卡也会报位数不匹配。
+> `main.spec` 顶部已加位数校验，位数不对会直接中止打包并提示。
+
+推荐直接用脚本（内部调用 32 位解释器并自动清理）：
 
 ```bash
-pyinstaller main.spec
+build_32.bat
 ```
 
-打包后的文件位于 `dist/Vision_Substrate_Silicone/` 目录下。
+或显式指定 32 位解释器：
+
+```bash
+"C:\Users\<用户>\AppData\Local\Programs\Python\Python39-32\python.exe" -m PyInstaller main.spec
+```
+
+打包后的文件位于 `dist/Vision_Substrate_Silicone/` 目录下（PyInstaller 6 为 onedir 布局，依赖与 DLL 都在 `_internal/` 内）。
 
 打包完成后可运行 `cleanup_after_build.bat` 清理不需要的大文件（如 Qt5 的 WebEngine、QML 等 DLL 和多语言翻译文件）。
 
-`runtime_hook.py` 会在打包后的程序启动时自动设置 DLL 搜索路径，确保 `GxIAPI.dll` / `DxImageProc.dll` 能被正确加载。
+`runtime_hook.py` 会在打包后的程序启动时自动把 `_internal/`（开发环境为项目根目录）加入 DLL 搜索路径（`os.add_dll_directory` + `PATH`），确保 `GxIAPI.dll` / `DxImageProc.dll` / `smcsh_mbs.dll` 能被正确加载。
 
 > **说明**：MES 功能使用的 `requests` 库（含 urllib3/certifi/idna 等子库）会被 PyInstaller 自动检测并打包进程序归档，无需额外配置。打包后建议实测一次 MES「测试连接」功能确认网络通信正常。
 

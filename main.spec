@@ -3,6 +3,24 @@
 import os
 import shutil
 
+# ============================================================
+# 位数校验(必须保留在最前)
+# ============================================================
+# 本项目依赖的三个本地 DLL 均为 32 位(x86):
+#     GxIAPI.dll / DxImageProc.dll (大恒相机 SDK)、smcsh_mbs.dll (SMC6480 运控卡)
+# 若用 64 位 Python 打包,32 位 DLL 无法载入 64 位进程,启动时会报
+#     NameError: name 'dll' is not defined   (gxwrapper 加载 GxIAPI.dll 失败)
+# 或运动卡 DLL 位数不匹配。因此这里强制要求 32 位解释器。
+# 请使用 build_32.bat 打包(它会调用 32 位 Python)。
+import struct as _struct
+if _struct.calcsize('P') * 8 != 32:
+    raise SystemExit(
+        "[打包中止] 必须使用 32 位 Python 打包,当前解释器为 %d 位!\n"
+        "  原因: GxIAPI.dll / DxImageProc.dll / smcsh_mbs.dll 均为 32 位(x86)。\n"
+        "  请运行 build_32.bat,或显式指定 32 位解释器,例如:\n"
+        "    \"%%LOCALAPPDATA%%\\Programs\\Python\\Python39-32\\python.exe\" -m PyInstaller main.spec"
+        % (_struct.calcsize('P') * 8))
+
 hidden_imports = [
     # 视觉工具（动态加载，必须显式声明）
     'vision.tools.preprocess',
