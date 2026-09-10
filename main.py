@@ -32,6 +32,78 @@ def _show_mes_dialog(app: QApplication):
     dialog.exec_()
 
 
+def _selftest_barcode(image_path: str) -> int:
+    """打包自检:验证"条码识别"在打包环境下是否可用。
+
+    用法(窗口模式无 stdout,结果写入 JSON 文件):
+        Vision_Substrate_Silicone.exe --selftest-barcode <图片路径> [输出json]
+
+    输出内容包括:运行环境(frozen/cv2/numpy)、pyzbar 与 zbar DLL 加载情况、
+    图片读取结果、识别到的条码与尝试过的解码策略。用于快速定位
+    "源码能识别、打包后识别不到"这类缺库/缺 DLL 问题。
+    """
+    import json
+    import traceback
+
+    info = {"image": image_path}
+    try:
+        info["frozen"] = bool(getattr(sys, "frozen", False))
+        info["executable"] = sys.executable
+        info["python"] = sys.version.split()[0]
+        info["bits"] = 64 if sys.maxsize > 2 ** 32 else 32
+        import cv2 as _cv2
+        info["cv2"] = getattr(_cv2, "__version__", "?")
+        info["cv2_barcode_module"] = hasattr(_cv2, "barcode")
+        import numpy as _np
+        info["numpy"] = getattr(_np, "__version__", "?")
+    except Exception as e:  # noqa: BLE001
+        info["env_error"] = f"{type(e).__name__}: {e}"
+
+    # pyzbar / zbar DLL
+    try:
+        import pyzbar as _pyzbar
+        info["pyzbar_file"] = getattr(_pyzbar, "__file__", None)
+        from pyzbar import zbar_library as _zl
+        libzbar, deps = _zl.load()
+        info["zbar_loaded"] = True
+        info["zbar_deps"] = len(deps)
+    except Exception as e:  # noqa: BLE001
+        info["zbar_loaded"] = False
+        info["zbar_error"] = f"{type(e).__name__}: {e}"
+
+    # 识别
+    try:
+        import cv2
+        img = cv2.imread(image_path)
+        info["image_shape"] = None if img is None else list(img.shape)
+        if img is not None:
+            from vision.tools.recognize import QRCodeRecognize
+            from vision.tools.base_tool import PipelineContext
+            tool = QRCodeRecognize()
+            ctx = PipelineContext(original_image=img, current_image=img)
+            res = tool.process(ctx)
+            info["recognized"] = bool(res.data.get("recognized"))
+            info["qr_data"] = res.data.get("qr_data")
+            info["barcode_count"] = res.data.get("barcode_count")
+            info["barcodes"] = res.data.get("barcodes")
+            info["strategies_tried"] = list(tool._last_variants)
+    except Exception as e:  # noqa: BLE001
+        info["recognize_error"] = f"{type(e).__name__}: {e}"
+        info["traceback"] = traceback.format_exc()
+
+    out_path = (sys.argv[3] if len(sys.argv) > 3 else
+                os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])),
+                             "selftest_barcode.json"))
+    try:
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(info, f, ensure_ascii=False, indent=2)
+        print(f"[selftest] 结果已写入: {out_path}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[selftest] 写结果失败: {e}")
+    print(f"[selftest] {json.dumps(info, ensure_ascii=False)}")
+    return 0
+
+
 def main():
     setup_high_dpi()
 
@@ -232,4 +304,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # 打包自检入口(不影响正常启动):
+    #   Vision_Substrate_Silicone.exe --selftest-barcode <图片路径> [输出json]
+    if len(sys.argv) > 2 and sys.argv[1] == "--selftest-barcode":
+        sys.exit(_selftest_barcode(sys.argv[2]))
     main()

@@ -597,7 +597,17 @@ build_32.bat
 
 打包完成后可运行 `cleanup_after_build.bat` 清理不需要的大文件（如 Qt5 的 WebEngine、QML 等 DLL 和多语言翻译文件）。
 
-`runtime_hook.py` 会在打包后的程序启动时自动把 `_internal/`（开发环境为项目根目录）加入 DLL 搜索路径（`os.add_dll_directory` + `PATH`），确保 `GxIAPI.dll` / `DxImageProc.dll` / `smcsh_mbs.dll` 能被正确加载。
+`runtime_hook.py` 会在打包后的程序启动时自动把 `_internal/`（开发环境为项目根目录）加入 DLL 搜索路径（`os.add_dll_directory` + `PATH`），并**以绝对路径预加载** `libiconv-2.dll` / `libzbar-32.dll`（条码识别 pyzbar 的依赖），确保 `GxIAPI.dll` / `DxImageProc.dll` / `smcsh_mbs.dll` / zbar 都能被正确加载。
+
+### 打包后自检（排查"源码能用、打包后不行"）
+
+窗口模式没有 stdout，可用自检入口验证条码识别在打包环境下是否正常（结果写入 JSON）：
+
+```bash
+Vision_Substrate_Silicone.exe --selftest-barcode <图片路径> [输出json路径]
+```
+
+输出包含：是否 frozen、位数、cv2/numpy 版本、pyzbar 与 zbar DLL 是否加载成功、图片尺寸、识别结果与尝试过的解码策略。
 
 > **说明**：MES 功能使用的 `requests` 库（含 urllib3/certifi/idna 等子库）会被 PyInstaller 自动检测并打包进程序归档，无需额外配置。打包后建议实测一次 MES「测试连接」功能确认网络通信正常。
 

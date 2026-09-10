@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 
 from .base_tool import VisionTool, ToolResult, PipelineContext
-from core.log_manager import log_warning
+from core.log_manager import log_info, log_warning, log_error
 
 
 class ColorRecognition(VisionTool):
@@ -1496,13 +1496,16 @@ class QRCodeRecognize(VisionTool):
         return self._barcode_detector
 
     def _check_pyzbar(self) -> bool:
-        """检查 pyzbar 是否可用。"""
+        """检查 pyzbar 是否可用(失败原因写入日志,便于打包后排查)。"""
         if self._pyzbar_available is None:
             try:
                 from pyzbar import pyzbar  # noqa: F401
                 self._pyzbar_available = True
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
                 self._pyzbar_available = False
+                # 打包环境最常见:zbar DLL 未随包(或工作目录不含 DLL)
+                log_error(f"pyzbar 不可用,一维码/部分二维码将无法识别: "
+                          f"{type(e).__name__}: {e}")
         return self._pyzbar_available
 
     def process(self, context: PipelineContext) -> ToolResult:
@@ -1522,9 +1525,20 @@ class QRCodeRecognize(VisionTool):
         barcodes = self._deduplicate(barcodes)
 
         # 调试日志：输出算子实际收到的图像尺寸与识别结果
+        # 注意:打包后窗口模式没有 stdout,print 看不到,因此关键信息同时写日志。
+        _input_src = (self.params.get('_input_source')
+                      or self.params.get('input_source', 'current'))
         print(f"[DEBUG][QRCodeRecognize] 输入图像 shape={img.shape} dtype={img.dtype} "
-              f"input_source={self.params.get('_input_source') or self.params.get('input_source', 'current')} "
+              f"input_source={_input_src} "
               f"识别到 {len(barcodes)} 个条码: {[b.get('data') for b in barcodes]}")
+        if barcodes:
+            log_info(f"条码识别: 输入={img.shape[1]}x{img.shape[0]} "
+                     f"来源={_input_src} 结果="
+                     f"{[(b.get('type'), b.get('data')) for b in barcodes]}")
+        else:
+            log_warning(f"条码未识别: 输入={img.shape[1]}x{img.shape[0]} "
+                        f"来源={_input_src} 已试策略={self._last_variants} "
+                        f"pyzbar可用={self._check_pyzbar()}")
         if not barcodes:
             print(f"[DEBUG][QRCodeRecognize] 未识别到条码,已尝试策略: {self._last_variants}")
 
@@ -1875,8 +1889,7 @@ class QRCodeRecognize(VisionTool):
             if _try_variant(tag, im, scale):
                 return results
             if time.perf_counter() - t0 > budget:
-                print(f"[DEBUG][QRCodeRecognize] 解码超时({budget * 1000:.0f}ms),"
-                      f"提前结束,已试 {len(tried)} 个策略")
+                log_warning(f"条码解码超时({budget * 1000:.0f}ms),提前结束,已试 {len(tried)} 个策略")
                 return results
         return results
 
@@ -1898,6 +1911,7 @@ class QRCodeRecognize(VisionTool):
                     return
             except Exception as e:  # noqa: BLE001
                 print(f"[DEBUG][QRCodeRecognize] pyzbar 解码异常({tag}): {e}")
+                log_warning(f"pyzbar 解码异常({tag}): {e}")
         # 2) OpenCV 二维码检测器(部分二维码比 zbar 更稳)
         if self.params.get("enable_qr", True):
             detector = self._get_qr_detector()
