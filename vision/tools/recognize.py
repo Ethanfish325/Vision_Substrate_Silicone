@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import time
 from typing import Optional, Dict, Any, List, Tuple
 import numpy as np
 import cv2
@@ -1458,9 +1459,41 @@ class QRCodeRecognize(VisionTool):
         self.params.setdefault("require_pass", True)
         self.params.setdefault("expected_prefix", "")
         self.params.setdefault("enable_1d", True)
+        self.params.setdefault("enable_qr", True)
         self.params.setdefault("barcode_formats",
                                ["CODE_128", "CODE_39", "EAN_13", "UPC_A"])
+        # 反色增强(浅色码/镭雕码:亮条码在深色板面上)
+        self.params.setdefault("try_inverted", True)
+        # 调试用:把算子实际收到的输入图写到 _debug_roi/operator_input.png
+        # (识别失败时总会写,便于现场排查;成功时默认不写,避免产线每片写盘)
+        self.params.setdefault("debug_dump_input", False)
         self._pyzbar_available = None
+        self._qr_detector = None
+        self._barcode_detector = None
+        self._barcode_detector_tried = False
+        self._last_variants = []      # 最近一次解码尝试的策略标签(调试用)
+
+    # ---- 解码器(惰性创建,避免每次重建) ----
+
+    def _get_qr_detector(self):
+        if self._qr_detector is None:
+            try:
+                self._qr_detector = cv2.QRCodeDetector()
+            except Exception:  # noqa: BLE001
+                self._qr_detector = False
+        return self._qr_detector or None
+
+    def _get_barcode_detector(self):
+        """OpenCV 一维码检测器(EAN/UPC/Code128 等,作为 pyzbar 的补充)。"""
+        if not self._barcode_detector_tried:
+            self._barcode_detector_tried = True
+            try:
+                if hasattr(cv2, "barcode") and hasattr(cv2.barcode, "BarcodeDetector"):
+                    self._barcode_detector = cv2.barcode.BarcodeDetector()
+            except Exception as e:  # noqa: BLE001
+                print(f"[DEBUG][QRCodeRecognize] OpenCV 一维码检测器不可用: {e}")
+                self._barcode_detector = None
+        return self._barcode_detector
 
     def _check_pyzbar(self) -> bool:
         """检查 pyzbar 是否可用。"""
@@ -1483,14 +1516,8 @@ class QRCodeRecognize(VisionTool):
         else:
             gray = img.copy()
 
-        # 识别所有条码（二维码 + 一维码）
-        barcodes = []  # 每个元素: {"type", "data", "confidence", "bbox"}
-        barcodes.extend(self._decode_qr(gray))
-        enable_1d = self.params.get("enable_1d", True)
-        print(f"[DEBUG][QRCodeRecognize] enable_1d={enable_1d} params={self.params}")
-        if enable_1d:
-            barcodes.extend(self._decode_1d(gray))
-
+        # 识别所有条码（二维码 + 一维码）:统一多策略解码
+        barcodes = self._decode_all(gray)
         # 去重（按内容 + 位置）
         barcodes = self._deduplicate(barcodes)
 
@@ -1498,14 +1525,18 @@ class QRCodeRecognize(VisionTool):
         print(f"[DEBUG][QRCodeRecognize] 输入图像 shape={img.shape} dtype={img.dtype} "
               f"input_source={self.params.get('_input_source') or self.params.get('input_source', 'current')} "
               f"识别到 {len(barcodes)} 个条码: {[b.get('data') for b in barcodes]}")
-        # 保存算子收到的输入图像，便于排查 ROI 内容
-        try:
-            import os
-            dbg_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '_debug_roi')
-            os.makedirs(dbg_dir, exist_ok=True)
-            cv2.imwrite(os.path.join(dbg_dir, 'operator_input.png'), img)
-        except Exception:  # noqa: BLE001
-            pass
+        if not barcodes:
+            print(f"[DEBUG][QRCodeRecognize] 未识别到条码,已尝试策略: {self._last_variants}")
+
+        # 排查用:识别失败时(或显式开启 debug_dump_input)保存算子收到的输入图
+        if (not barcodes) or self.params.get("debug_dump_input", False):
+            try:
+                import os
+                dbg_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '_debug_roi')
+                os.makedirs(dbg_dir, exist_ok=True)
+                cv2.imwrite(os.path.join(dbg_dir, 'operator_input.png'), img)
+            except Exception:  # noqa: BLE001
+                pass
 
         # 第一个条码内容（向后兼容 qr_data 字段）
         first_data = barcodes[0]["data"] if barcodes else ""
@@ -1523,23 +1554,52 @@ class QRCodeRecognize(VisionTool):
         passed = recognized if require_pass else True
 
         # 绘制 overlay 标注（框出所有条码）
-        # 注意：若使用 ROI 输入源，img 是 ROI 局部图像，需将标注偏移到完整帧坐标
+        # 注意：若使用 ROI 输入源，img 是 ROI 局部图像，需把标注回投到完整帧坐标。
+        # 若该 ROI 是"位置修正随动"的旋转矩形(base_tool 已用 crop_rotated_rect
+        # 摆正后交给本算子),回投必须做逆旋转,不能只平移 bbox 原点——否则标注
+        # 会相对真实条码错位(与颜色识别描边同类问题)。
         input_source = self.params.get("_input_source") or self.params.get("input_source", "current")
+        rot_back = None
+        rx, ry = 0, 0
         if input_source.startswith("region:") and self._full_frame_image is not None:
             overlay = np.zeros_like(self._full_frame_image)
             region_name = input_source[7:]
-            rx, ry = 0, 0
             if region_name in context.regions:
                 rx, ry, _, _ = context.regions[region_name]
+            rot = context.region_rot.get(region_name)
+            if rot is not None:
+                from vision.geometry_util import (is_axis_aligned,
+                                                  crop_points_to_frame)
+                rcx, rcy, rw, rh, rang = rot
+                axis = is_axis_aligned(rang)
+                need_rot = (not axis) or abs(rang) > 1e-3
+                if need_rot and not axis:
+                    # 镜像 base_tool:非轴对齐且区域出界时回退为外接框普通裁剪
+                    fh, fw = self._full_frame_image.shape[:2]
+                    inside = (rcx - rw / 2 > 0 and rcy - rh / 2 > 0
+                              and rcx + rw / 2 < fw and rcy + rh / 2 < fh)
+                    if not inside:
+                        need_rot = False
+                if need_rot:
+                    rot_back = (float(rcx), float(rcy), float(rang))
         else:
             overlay = np.zeros_like(img)
-            rx, ry = 0, 0
 
         for bc in barcodes:
             x, y, w, h = bc["bbox"]
-            # 偏移到完整帧坐标（ROI 模式）
-            x += rx
-            y += ry
+            # 回投到完整帧坐标（ROI 模式）:旋转随动 ROI 需逆旋转
+            if rot_back is not None:
+                corners = np.array([[[x, y]], [[x + w, y]],
+                                    [[x + w, y + h]], [[x, y + h]]],
+                                   dtype=np.float32)
+                back = crop_points_to_frame(corners, img.shape[1], img.shape[0],
+                                            rot_back[0], rot_back[1],
+                                            rot_back[2])
+                pts = back.reshape(-1, 2)
+                x, y, w, h = cv2.boundingRect(pts)
+            else:
+                x += rx
+                y += ry
             # 识别到条码统一用绿色标注（二维码/一维码）
             color = (0, 255, 0)
             # 使用识别点（圆点）标注，避免 bbox 位置不稳定导致识别框乱跳
@@ -1574,185 +1634,425 @@ class QRCodeRecognize(VisionTool):
             message=message
         )
 
-    def _decode_qr(self, gray: np.ndarray) -> list:
-        """识别二维码，返回条码列表。"""
-        results = []
-        data, points = self._try_decode(gray)
-        if data:
-            bbox = self._points_to_bbox(points)
-            results.append({
-                "type": "QR",
-                "data": data,
-                "confidence": 1.0,
-                "bbox": bbox,
-            })
+    # ==================================================================
+    # 统一多策略解码(二维码 + 一维码)
+    # ==================================================================
+
+    # 单个解码变体的像素上限:放大后超过该值就不再试(保护耗时与内存)
+    MAX_VARIANT_PIXELS = 6_000_000
+    # 全面模式的像素上限(更保守:此阶段变体多,避免单片耗时过长)
+    MAX_THOROUGH_VARIANT_PIXELS = 4_000_000
+    # 整体解码时间预算(毫秒):超时即停止继续扩展策略,保证产线节拍可控
+    DECODE_TIME_BUDGET_MS = 1200
+    # 大图(超过该像素)启用"先粗定位条码区域、再局部放大"策略
+    CANDIDATE_REGION_MIN_PIXELS = 1_200_000
+
+    # ---- 预处理小工具 ----
+
+    @staticmethod
+    def _odd_at_least(value: int, limit: int = 0) -> int:
+        """返回不小于 value 的奇数(自适应阈值的 blockSize 必须为奇数)。"""
+        b = int(value)
+        if b % 2 == 0:
+            b += 1
+        if limit > 0:
+            max_odd = limit if limit % 2 == 1 else limit - 1
+            if max_odd >= 3 and b > max_odd:
+                b = max_odd
+        return max(3, b)
+
+    @staticmethod
+    def _resize(gray: np.ndarray, scale: int) -> np.ndarray:
+        return cv2.resize(gray, None, fx=scale, fy=scale,
+                          interpolation=cv2.INTER_CUBIC)
+
+    @staticmethod
+    def _bin_otsu(gray: np.ndarray) -> np.ndarray:
+        return cv2.threshold(gray, 0, 255,
+                             cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+    @staticmethod
+    def _bin_adaptive(gray: np.ndarray, block: int, c: int = 10) -> np.ndarray:
+        h, w = gray.shape[:2]
+        b = QRCodeRecognize._odd_at_least(block, min(h, w))
+        return cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                     cv2.THRESH_BINARY, b, c)
+
+    @staticmethod
+    def _clahe(gray: np.ndarray) -> np.ndarray:
+        return cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(gray)
+
+    @staticmethod
+    def _unsharp(gray: np.ndarray, amount: float = 0.6) -> np.ndarray:
+        blur = cv2.GaussianBlur(gray, (0, 0), 1.5)
+        return cv2.addWeighted(gray, 1.0 + amount, blur, -amount, 0)
+
+    def _polarities(self, gray: np.ndarray):
+        """返回 (前缀, 基准图) 列表:常规 + 反色(亮码/镭雕码在深底)。
+
+        注意:反色必须"先取反得到新基准图,再套同一套增强"。
+        实测"对增强结果取反"得到的仍是亮条码,解码器读不出。
+        """
+        out = [("", gray)]
+        if self.params.get("try_inverted", True):
+            out.append(("inv_", cv2.bitwise_not(gray)))
+        return out
+
+    # ---- 变体生成 ----
+
+    def _build_variants(self, gray: np.ndarray, thorough: bool = False):
+        """生成解码变体 (tag, image, scale)。
+
+        快通道(命中即返回):两种极性的 raw + 自适应(31),再按像素预算加
+        2x 放大 —— 多数清晰条码一轮即中,保证产线单片耗时可控。
+        全面模式(仅快通道无结果时):补充 Otsu、自适应(15/51)、CLAHE、
+        锐化,以及 2x/3x/4x 放大(大图改为"局部候选区域放大",见
+        _candidate_variants,避免整图放大导致耗时爆炸)。
+
+        说明:
+          - pyzbar(zbar)内部会按 0/90/180/270 四个方向扫描,无需手工旋转;
+          - 不再限制"图像小于 800px 才放大":真实 ROI 常更大、条码只占
+            几十像素,必须放大才可能解出;
+          - 实测同一张真实 1D 样本:raw 解不出,adap31/51 与 2x+CLAHE 能解出,
+            故"多种自适应核 + 多尺度"缺一不可。
+        """
+        h, w = gray.shape[:2]
+        px = int(h) * int(w)
+        polarities = self._polarities(gray)
+
+        if not thorough:
+            for ptag, base in polarities:
+                yield f"{ptag}raw", base, 1.0
+                yield f"{ptag}adap31", self._bin_adaptive(base, 31), 1.0
+            if px * 4 <= self.MAX_VARIANT_PIXELS:
+                for ptag, base in polarities:
+                    up = self._resize(base, 2)
+                    yield f"{ptag}x2", up, 2.0
+                    yield f"{ptag}x2_adap63", self._bin_adaptive(up, 63), 2.0
+            return
+
+        # ---- 全面模式:1x 增强(两种极性) ----
+        for ptag, base in polarities:
+            yield f"{ptag}otsu", self._bin_otsu(base), 1.0
+            for bs in (15, 51):
+                yield f"{ptag}adap{bs}", self._bin_adaptive(base, bs), 1.0
+            yield f"{ptag}clahe", self._clahe(base), 1.0
+            yield f"{ptag}unsharp", self._unsharp(base), 1.0
+
+        # ---- 全面模式:小图整图多尺度放大 ----
+        if px <= self.CANDIDATE_REGION_MIN_PIXELS:
+            for scale in (2, 3, 4):
+                if px * scale * scale > self.MAX_THOROUGH_VARIANT_PIXELS:
+                    continue
+                for ptag, base in polarities:
+                    up = self._resize(base, scale)
+                    yield f"{ptag}x{scale}", up, float(scale)
+                    yield (f"{ptag}x{scale}_adap",
+                           self._bin_adaptive(up, 31 * scale), float(scale))
+                    yield f"{ptag}x{scale}_clahe", self._clahe(up), float(scale)
+
+    def _candidate_variants(self, gray: np.ndarray):
+        """大图策略:先粗定位"像条码"的区域,再对这些小区域局部放大解码。
+
+        整图放大在 1MP 以上会非常慢;而条码在 ROI 里通常只占一小块,
+        因此用形态学梯度找"边缘密集"的连通块 → 裁出候选区域 → 放大 2~4x
+        解码,既快又对小条码更敏感。
+
+        yield: (tag, image, scale, offset_x, offset_y)
+        """
+        h, w = gray.shape[:2]
+        for idx, (x0, y0, x1, y1) in enumerate(self._find_barcode_regions(gray)):
+            sub = gray[y0:y1, x0:x1]
+            sh, sw = sub.shape[:2]
+            if sh < 24 or sw < 24:
+                continue
+            for ptag, base in self._polarities(sub):
+                # 候选区域很小,1x 先用最有效的自适应阈值
+                yield (f"c{idx}{ptag}adap31",
+                       self._bin_adaptive(base, 31), 1.0, x0, y0)
+                # 局部放大 2x/3x 是最有价值的一档(小条码靠这个解出)
+                for scale in (2, 3):
+                    if (sw * scale) * (sh * scale) > self.MAX_THOROUGH_VARIANT_PIXELS:
+                        continue
+                    up = self._resize(base, scale)
+                    yield (f"c{idx}{ptag}x{scale}", up, float(scale), x0, y0)
+                    yield (f"c{idx}{ptag}x{scale}_adap",
+                           self._bin_adaptive(up, 31 * scale), float(scale),
+                           x0, y0)
+
+    @staticmethod
+    def _find_barcode_regions(gray: np.ndarray, max_regions: int = 3,
+                              max_side: int = 640, min_side: int = 32):
+        """粗定位疑似条码区域,返回 [(x0,y0,x1,y1)]（最多 max_regions 个）。
+
+        原理:条码是"高频、方向一致的条纹",形态学梯度响应强且成片;
+        用梯度 → Otsu → 闭运算 → 连通块,按面积取前几个。
+        """
+        try:
+            k = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+            grad = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, k)
+            _, bw = cv2.threshold(grad, 0, 255,
+                                  cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            bw = cv2.morphologyEx(
+                bw, cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25)))
+            n, _labels, stats, _cent = cv2.connectedComponentsWithStats(bw, 8)
+            boxes = []
+            for i in range(1, n):
+                x, y, bw_, bh_, area = stats[i]
+                if bw_ < min_side or bh_ < min_side:
+                    continue
+                boxes.append((int(area), int(x), int(y), int(bw_), int(bh_)))
+            boxes.sort(reverse=True)
+            out = []
+            h, w = gray.shape[:2]
+            for _area, x, y, bw_, bh_ in boxes:
+                pad = int(0.15 * max(bw_, bh_))
+                x0, y0 = max(0, x - pad), max(0, y - pad)
+                x1, y1 = min(w, x + bw_ + pad), min(h, y + bh_ + pad)
+                if (x1 - x0) > max_side or (y1 - y0) > max_side:
+                    # 区域过大:说明整图都像高频内容(如噪声),不裁剪
+                    continue
+                out.append((x0, y0, x1, y1))
+                if len(out) >= max_regions:
+                    break
+            return out
+        except Exception:  # noqa: BLE001
+            return []
+
+    # ---- 解码主流程 ----
+
+    def _decode_all(self, gray: np.ndarray) -> list:
+        """统一多策略解码(二维码 + 一维码),返回条码列表。
+
+        顺序:快通道(约 4~8 个变体,命中即返回)→ 全面模式(1x 增强 +
+        多尺度/候选区域放大)。整个过程受时间预算约束,避免无码图像上
+        无限尝试导致产线节拍失控。
+        """
+        results: list = []
+        self._last_variants = []
+        try:
+            if float(gray.std()) < 3.0:
+                # 近乎纯色(纯白/纯黑)→ 不可能有条码,直接返回
+                return results
+        except Exception:  # noqa: BLE001
+            pass
+
+        budget = float(self.params.get("decode_time_budget_ms",
+                                       self.DECODE_TIME_BUDGET_MS)) / 1000.0
+        t0 = time.perf_counter()
+        tried = set()
+
+        def _try_variant(tag, im, scale, ox=0, oy=0):
+            if tag in tried:
+                return False
+            tried.add(tag)
+            self._decode_variant(im, tag, scale, results, ox, oy)
+            return bool(results)
+
+        # ── 第一轮:快通道(整图,命中即返回;约 4~8 个变体) ──
+        # 先跑整图:真实图上一轮解码只要几十毫秒,是命中率最高、代价最低的路径。
+        phase1_deadline = t0 + budget * 0.5
+        for tag, im, scale in self._build_variants(gray, thorough=False):
+            if _try_variant(tag, im, scale):
+                return results
+            if time.perf_counter() > phase1_deadline:
+                break
+
+        # ── 第二轮:大图候选区域局部放大(取部分预算,避免挤掉后续整图策略) ──
+        h, w = gray.shape[:2]
+        large = int(h) * int(w) > self.CANDIDATE_REGION_MIN_PIXELS
+        if large:
+            phase2_deadline = t0 + budget * 0.8
+            for tag, im, scale, ox, oy in self._candidate_variants(gray):
+                if _try_variant(tag, im, scale, ox, oy):
+                    return results
+                if time.perf_counter() > phase2_deadline:
+                    break
+
+        # ── 第三轮:全面模式(1x 增强 + 多尺度) ──
+        for tag, im, scale in self._build_variants(gray, thorough=True):
+            if _try_variant(tag, im, scale):
+                return results
+            if time.perf_counter() - t0 > budget:
+                print(f"[DEBUG][QRCodeRecognize] 解码超时({budget * 1000:.0f}ms),"
+                      f"提前结束,已试 {len(tried)} 个策略")
+                return results
         return results
+
+    def _decode_variant(self, im: np.ndarray, tag: str, scale: float,
+                        out: list, offset_x: int = 0,
+                        offset_y: int = 0) -> None:
+        """对单个变体依次尝试各解码器,结果追加到 out。
+
+        offset_x/offset_y:该变体相对完整 ROI 的裁剪偏移(候选区域策略用)。
+        """
+        self._last_variants.append(tag)
+        # 1) pyzbar(zbar):一次调用可同时返回二维码与一维码
+        if self._check_pyzbar():
+            try:
+                from pyzbar import pyzbar
+                for d in pyzbar.decode(im):
+                    self._append_pyzbar(out, d, scale, offset_x, offset_y)
+                if out:
+                    return
+            except Exception as e:  # noqa: BLE001
+                print(f"[DEBUG][QRCodeRecognize] pyzbar 解码异常({tag}): {e}")
+        # 2) OpenCV 二维码检测器(部分二维码比 zbar 更稳)
+        if self.params.get("enable_qr", True):
+            detector = self._get_qr_detector()
+            if detector is not None:
+                try:
+                    data, points, _ = detector.detectAndDecode(im)
+                    if data:
+                        self._append_2d(out, data, points, scale, "QR",
+                                        offset_x, offset_y)
+                except Exception:  # noqa: BLE001
+                    pass
+        # 3) OpenCV 一维码检测器(补充 EAN/UPC/Code128)
+        if self.params.get("enable_1d", True):
+            bd = self._get_barcode_detector()
+            if bd is not None:
+                try:
+                    ret = bd.detectAndDecodeWithType(im)
+                    ok = ret[0]
+                    info = ret[1] if len(ret) > 1 else None
+                    types = ret[2] if len(ret) > 2 else None
+                    quads = ret[3] if len(ret) > 3 else None
+                    if ok:
+                        infos = info if isinstance(info, (list, tuple)) else [info]
+                        typs = (types if isinstance(types, (list, tuple))
+                                else [types])
+                        for i, txt in enumerate(infos):
+                            txt = str(txt or "").strip()
+                            if not txt:
+                                continue
+                            btype = str(typs[i]) if i < len(typs) else "1D"
+                            quad = None
+                            if quads is not None and len(quads) > i:
+                                quad = quads[i]
+                            self._append_1d(out, txt, btype, quad, scale,
+                                            offset_x, offset_y)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    # ---- 结果整理 ----
+
+    def _append_pyzbar(self, out: list, decoded, scale: float,
+                       offset_x: int = 0, offset_y: int = 0) -> None:
+        """把 pyzbar 的单条结果整理为内部结构。"""
+        data = (decoded.data.decode("utf-8", errors="replace")
+                if decoded.data else "")
+        if not data:
+            return
+        btype = (getattr(decoded, "type", "") or "").upper()
+        confidence = min(1.0, float(getattr(decoded, "quality", 100)) / 100.0)
+        bbox = self._bbox_from_pyzbar(decoded, scale, offset_x, offset_y)
+        if btype in ("QRCODE", "QR", "MICROQRCODE", "DATAMATRIX", "AZTEC",
+                     "PDF417", "MAXICODE"):
+            if not self.params.get("enable_qr", True):
+                return
+            typ = "QR" if "QR" in btype else "DM"
+            out.append({"type": typ, "data": data, "confidence": confidence,
+                        "barcode_type": btype, "bbox": bbox})
+            return
+        # 一维码:受"启用一维码 + 格式集合"过滤
+        if not self.params.get("enable_1d", True):
+            return
+        if not self._format_allowed(btype):
+            return
+        out.append({"type": "1D", "data": data, "confidence": confidence,
+                    "barcode_type": btype, "bbox": bbox})
+
+    def _append_2d(self, out: list, data: str, points, scale: float,
+                   typ: str, offset_x: int = 0, offset_y: int = 0) -> None:
+        out.append({"type": typ, "data": data, "confidence": 1.0,
+                    "barcode_type": "QRCODE" if typ == "QR" else typ,
+                    "bbox": self._bbox_from_points(points, scale,
+                                                   offset_x, offset_y)})
+
+    def _append_1d(self, out: list, data: str, btype: str, quad,
+                   scale: float, offset_x: int = 0, offset_y: int = 0) -> None:
+        if not self._format_allowed(btype):
+            return
+        out.append({"type": "1D", "data": data, "confidence": 1.0,
+                    "barcode_type": btype,
+                    "bbox": self._bbox_from_points(quad, scale,
+                                                   offset_x, offset_y)})
+
+    def _bbox_from_pyzbar(self, decoded, scale: float,
+                          offset_x: int = 0, offset_y: int = 0) -> tuple:
+        """pyzbar 结果的 bbox:优先用四点多边形。
+
+        旋转(如竖放)条码的 rect 会退化成 1px 宽/高,多边形才是真实位置,
+        否则标注点与"条码区域"会对不上。
+        """
+        pts = getattr(decoded, "polygon", None)
+        if pts:
+            return self._bbox_from_points(pts, scale, offset_x, offset_y)
+        r = decoded.rect
+        return self._sanitize_bbox(int(r.left / scale) + offset_x,
+                                   int(r.top / scale) + offset_y,
+                                   int(r.width / scale), int(r.height / scale))
+
+    def _bbox_from_points(self, points, scale: float,
+                          offset_x: int = 0, offset_y: int = 0) -> tuple:
+        if points is None:
+            return (0, 0, 0, 0)
+        try:
+            arr = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+            if arr.size == 0:
+                return (0, 0, 0, 0)
+            x, y, w, h = cv2.boundingRect(
+                (arr / max(1e-6, float(scale))).astype(np.float32))
+            return self._sanitize_bbox(int(x) + offset_x, int(y) + offset_y,
+                                       int(w), int(h))
+        except Exception:  # noqa: BLE001
+            return (0, 0, 0, 0)
+
+    @staticmethod
+    def _sanitize_bbox(x: int, y: int, w: int, h: int) -> tuple:
+        """保证标注框可见:过小的框补到最小尺寸(仅用于标注/日志)。"""
+        x, y = max(0, int(x)), max(0, int(y))
+        w, h = int(w), int(h)
+        if w < 20:
+            x = max(0, x - (20 - w) // 2)
+            w = 20
+        if h < 20:
+            y = max(0, y - (20 - h) // 2)
+            h = 20
+        return (x, y, w, h)
+
+    # ---- 兼容旧接口(内部统一走 _decode_all) ----
+
+    def _decode_qr(self, gray: np.ndarray) -> list:
+        """仅返回二维码/DataMatrix 结果(兼容旧接口)。"""
+        return [b for b in self._decode_all(gray)
+                if b.get("type") in ("QR", "DM")]
 
     def _decode_1d(self, gray: np.ndarray) -> list:
-        """识别一维码（使用 pyzbar），多策略提高识别率，返回条码列表。
-
-        依次尝试：
-            1. 原始灰度图
-            2. 自适应阈值二值化（增强对比度）
-            3. CLAHE 对比度增强
-            4. 放大 2 倍（小一维码）
-            5. 旋转 90°（垂直一维码）
-        """
-        pyzbar_ok = self._check_pyzbar()
-        print(f"[DEBUG][_decode_1d] pyzbar可用={pyzbar_ok}")
-        if not pyzbar_ok:
-            return []
-        try:
-            from pyzbar import pyzbar
-        except Exception as e:  # noqa: BLE001
-            print(f"[DEBUG][_decode_1d] pyzbar导入失败: {e}")
-            return []
-
-        results = []
-
-        def _collect(decoded, scale=1.0, rot=0, src_shape=None, tag=""):
-            """收集识别结果，scale 为放大倍数，rot 为旋转角度。
-
-            rot=90 表示图像顺时针旋转 90° 后识别，需将旋转后坐标逆变换回原图坐标。
-            src_shape 为原图 (h, w)，用于旋转坐标逆变换。
-            """
-            for d in decoded:
-                btype = d.type
-                if not self._format_allowed(btype):
-                    continue
-                data = d.data.decode('utf-8', errors='replace') if d.data else ""
-                rect = d.rect
-                # 坐标缩放回原图（若放大过）
-                left = int(rect.left / scale)
-                top = int(rect.top / scale)
-                width = int(rect.width / scale)
-                height = int(rect.height / scale)
-                # 旋转后坐标逆变换回原图坐标
-                if rot == 90 and src_shape is not None:
-                    src_h, src_w = src_shape
-                    # 顺时针旋转90°: 原图(x,y) -> 旋转图(y, src_h-1-x)
-                    # 逆变换: 原图 x = src_h-1-y_rot, 原图 y = x_rot
-                    x0 = src_h - 1 - (top + height)
-                    y0 = left
-                    left, top = x0, y0
-                    width, height = height, width
-                elif rot == 270 and src_shape is not None:
-                    src_h, src_w = src_shape
-                    # 逆时针旋转90°(顺时针270°): 原图(x,y) -> 旋转图(src_w-1-y, x)
-                    # 逆变换: 原图 x = src_w-1-y_rot, 原图 y = x_rot
-                    x0 = src_w - 1 - (top + height)
-                    y0 = left
-                    left, top = x0, y0
-                    width, height = height, width
-                bbox = (left, top, width, height)
-                print(f"[DEBUG][_decode_1d] 策略[{tag}] 识别到 {data} bbox={bbox} raw_rect={rect}")
-                # 一维码可能返回极窄或 0 尺寸的矩形（小一维码/旋转后），
-                # 给 bbox 设置最小宽度/高度，保证识别框可见且不丢失识别结果。
-                min_w = max(20, int(width * 0.5))
-                min_h = max(20, int(height * 0.5))
-                if width < min_w:
-                    left = max(0, left - (min_w - width) // 2)
-                    width = min_w
-                if height < min_h:
-                    top = max(0, top - (min_h - height) // 2)
-                    height = min_h
-                bbox = (left, top, width, height)
-                confidence = min(1.0, getattr(d, 'quality', 100) / 100.0)
-                results.append({
-                    "type": "1D",
-                    "data": data,
-                    "confidence": confidence,
-                    "barcode_type": btype,
-                    "bbox": bbox,
-                })
-
-        # 策略 1：原始灰度图
-        try:
-            _collect(pyzbar.decode(gray))
-        except Exception:  # noqa: BLE001
-            pass
-
-        # 策略 2：自适应阈值二值化
-        try:
-            binary = cv2.adaptiveThreshold(
-                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, 51, 10)
-            _collect(pyzbar.decode(binary))
-        except Exception:  # noqa: BLE001
-            pass
-
-        # 策略 3：CLAHE 对比度增强
-        try:
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            enhanced = clahe.apply(gray)
-            _collect(pyzbar.decode(enhanced))
-        except Exception:  # noqa: BLE001
-            pass
-
-        # 策略 4：多尺度放大（2x~6x，小一维码/垂直条码），放大后同时尝试原始/自适应阈值/CLAHE
-        # 放大策略的 bbox 宽高非 0（位置准确），优先使用
-        # 注意：垂直条码（91~92°）对放大倍数敏感，需遍历多个倍数提高识别稳定性
-        try:
-            h, w = gray.shape[:2]
-            if max(h, w) < 800:
-                for scale in (2, 3, 4, 5, 6):
-                    up = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
-                    _collect(pyzbar.decode(up), scale=scale, tag=f"4a_x{scale}")
-                    # 放大后自适应阈值（小一维码放大后仍需二值化增强）
-                    up_bin = cv2.adaptiveThreshold(
-                        up, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                        cv2.THRESH_BINARY, 51, 10)
-                    _collect(pyzbar.decode(up_bin), scale=scale, tag=f"4b_x{scale}")
-                    # 放大后 CLAHE（对垂直条码识别关键）
-                    up_clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(up)
-                    _collect(pyzbar.decode(up_clahe), scale=scale, tag=f"4c_x{scale}")
-                    if results:
-                        break
-        except Exception as e:  # noqa: BLE001
-            print(f"[DEBUG][_decode_1d] 策略4异常: {e}")
-
-        # 放大策略已识别成功（bbox 位置准确），直接返回，避免原始图/旋转策略产生错误 bbox
-        if results:
-            return results
-
-        # 策略 5：旋转 90°（垂直一维码），旋转后同时尝试原始/自适应阈值
-        try:
-            rotated = cv2.rotate(gray, cv2.ROTATE_90_CLOCKWISE)
-            _collect(pyzbar.decode(rotated), rot=90, src_shape=gray.shape[:2], tag="5a")
-            rot_bin = cv2.adaptiveThreshold(
-                rotated, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, 51, 10)
-            _collect(pyzbar.decode(rot_bin), rot=90, src_shape=gray.shape[:2], tag="5b")
-        except Exception:  # noqa: BLE001
-            pass
-
-        # 策略 6：旋转 270°（垂直一维码，反向），旋转后同时尝试原始/自适应阈值
-        try:
-            rotated = cv2.rotate(gray, cv2.ROTATE_90_COUNTERCLOCKWISE)
-            _collect(pyzbar.decode(rotated), rot=270, src_shape=gray.shape[:2], tag="6a")
-            rot_bin = cv2.adaptiveThreshold(
-                rotated, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, 51, 10)
-            _collect(pyzbar.decode(rot_bin), rot=270, src_shape=gray.shape[:2], tag="6b")
-        except Exception:  # noqa: BLE001
-            pass
-
-        return results
+        """仅返回一维码结果(兼容旧接口)。"""
+        return [b for b in self._decode_all(gray) if b.get("type") == "1D"]
 
     def _format_allowed(self, btype: str) -> bool:
         """判断一维码格式是否在允许集合内。
 
-        btype 为 pyzbar 返回的类型名（如 CODE128），
+        btype 为解码器返回的类型名:pyzbar 用 CODE128,OpenCV 可能用
+        CODE_128,因此这里先把传入类型名统一归一化后再比较,
+        避免"配置了 CODE_128 却因命名差异把结果过滤掉"。
         配置的 barcode_formats 使用标准名（如 CODE_128）。
         """
         formats = self.params.get("barcode_formats", [])
         if not formats:
             return True
-        # 将配置的标准名映射为 pyzbar 类型名
+        norm = (btype or "").upper()
         allowed_types = set()
         for fmt in formats:
-            allowed_types.add(self.BARCODE_FORMATS.get(fmt, fmt))
-        return btype in allowed_types
+            f = str(fmt).upper()
+            allowed_types.add(self.BARCODE_FORMATS.get(f, f))
+        # 归一化传入类型(CODE_128 -> CODE128;EAN_13 -> EAN13 ...)
+        norm = self.BARCODE_FORMATS.get(norm, norm)
+        return norm in allowed_types
 
     def _points_to_bbox(self, points) -> tuple:
         """将条码角点转换为轴对齐矩形框 (x, y, w, h)。"""
@@ -1913,6 +2213,21 @@ class QRCodeRecognize(VisionTool):
         enable_1d_cb.stateChanged.connect(
             lambda s: self.params.update({"enable_1d": bool(s)}))
         widgets.append(("", enable_1d_cb))
+
+        # 是否启用二维码识别
+        enable_qr_cb = QCheckBox("启用二维码识别")
+        enable_qr_cb.setChecked(bool(self.params.get("enable_qr", True)))
+        enable_qr_cb.stateChanged.connect(
+            lambda s: self.params.update({"enable_qr": bool(s)}))
+        widgets.append(("", enable_qr_cb))
+
+        # 反色增强（浅色/镭雕码在深色板面上）
+        inv_cb = QCheckBox("反色增强(浅色码/镭雕码)")
+        inv_cb.setToolTip("亮条码/镭雕码落在深色板面上时,自动尝试反色后解码")
+        inv_cb.setChecked(bool(self.params.get("try_inverted", True)))
+        inv_cb.stateChanged.connect(
+            lambda s: self.params.update({"try_inverted": bool(s)}))
+        widgets.append(("", inv_cb))
 
         # 一维码格式集合（可编辑，逗号分隔）
         formats_combo = QComboBox(parent)

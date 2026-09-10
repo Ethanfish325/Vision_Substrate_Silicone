@@ -177,6 +177,100 @@ def test_expected_prefix():
     print("[PASS] SN 前缀校验")
 
 
+# ----------------------------------------------------------------------
+# 现场困难样本(2026-09 优化后新增)
+# ----------------------------------------------------------------------
+
+def test_inverted_1d():
+    """反色一维码(亮条码在深色底,如板面镭雕码)。"""
+    img = cv2.bitwise_not(make_1d_image('7654321098', 'code128'))
+    result = run_tool(img)
+    assert result.data.get('qr_data') == '7654321098', \
+        f"qr_data={result.data.get('qr_data')!r}"
+    print("[PASS] 反色一维码识别")
+
+
+def test_inverted_qr():
+    """反色二维码(浅色码在深色板面上)。"""
+    img = cv2.bitwise_not(make_qr_image('DM-INV-001'))
+    result = run_tool(img)
+    assert result.data.get('qr_data') == 'DM-INV-001', \
+        f"qr_data={result.data.get('qr_data')!r}"
+    print("[PASS] 反色二维码识别")
+
+
+def test_low_contrast_1d():
+    """低对比度一维码(光照不足/打光不均)。"""
+    img = make_1d_image('222333444', 'code128')
+    low = cv2.addWeighted(img, 0.25, np.full_like(img, 128), 0.75, 0)
+    result = run_tool(low)
+    assert result.data.get('qr_data') == '222333444', \
+        f"qr_data={result.data.get('qr_data')!r}"
+    print("[PASS] 低对比度一维码识别")
+
+
+def test_rotated_90_1d():
+    """竖放(旋转90°)一维码。"""
+    # 注:python-barcode 对 '9988776655' 会编码成 zbar 读作 '88776655' 的符号
+    # (生成器自身问题),故这里用已验证一一对应的取值。
+    img = cv2.rotate(make_1d_image('1122334455', 'code128'),
+                     cv2.ROTATE_90_CLOCKWISE)
+    result = run_tool(img)
+    assert result.data.get('qr_data') == '1122334455', \
+        f"qr_data={result.data.get('qr_data')!r}"
+    print("[PASS] 竖放一维码识别")
+
+
+def test_small_code_in_large_canvas():
+    """大 ROI 中的小条码:条码只占几十像素。
+
+    旧实现只在"图像最长边 < 800px"时才放大,大 ROI 下的细条码因此识别不到。
+    """
+    code = make_1d_image('1357924680', 'code128')
+    small = cv2.resize(code, None, fx=0.5, fy=0.5,
+                       interpolation=cv2.INTER_AREA)
+    canvas = np.full((1200, 1600, 3), 245, dtype=np.uint8)
+    canvas[100:100 + small.shape[0], 100:100 + small.shape[1]] = small
+    result = run_tool(canvas)
+    assert result.data.get('qr_data') == '1357924680', \
+        f"qr_data={result.data.get('qr_data')!r}"
+    print("[PASS] 大图小条码识别")
+
+
+def test_no_barcode_large_image_fast():
+    """大尺寸无码图像:不应长时间空转(时间预算保护)。"""
+    import time as _time
+    img = np.full((1200, 1600, 3), 240, dtype=np.uint8)
+    t0 = _time.perf_counter()
+    result = run_tool(img)
+    dt = _time.perf_counter() - t0
+    assert result.data.get('recognized') is False
+    assert dt < 3.0, f"无码大图耗时过长: {dt:.2f}s"
+    print(f"[PASS] 大图无码快速返回 ({dt * 1000:.0f}ms)")
+
+
+def test_real_sample_1d():
+    """真实现场样本(若存在 _debug_roi/operator_input_now.png)。
+
+    该样本 raw 解不出,只能靠自适应阈值/多尺度解出,是本次优化的直接依据。
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        '_debug_roi', 'operator_input_now.png')
+    if not os.path.exists(path):
+        print("[SKIP] 真实样本不存在,跳过")
+        return
+    img = cv2.imread(path)
+    result = run_tool(img)
+    assert result.data.get('qr_data') == 'SA16188971', \
+        f"qr_data={result.data.get('qr_data')!r}"
+    # 反色后也应能识别(亮码在深底场景)
+    inv = cv2.bitwise_not(img)
+    result2 = run_tool(inv)
+    assert result2.data.get('qr_data') == 'SA16188971', \
+        f"反色后 qr_data={result2.data.get('qr_data')!r}"
+    print("[PASS] 真实样本(原图 + 反色)识别")
+
+
 def run_all():
     """运行所有测试。"""
     tests = [
@@ -190,6 +284,13 @@ def run_all():
         test_disable_1d,
         test_format_filter,
         test_expected_prefix,
+        test_inverted_1d,
+        test_inverted_qr,
+        test_low_contrast_1d,
+        test_rotated_90_1d,
+        test_small_code_in_large_canvas,
+        test_no_barcode_large_image_fast,
+        test_real_sample_1d,
     ]
     passed = 0
     for t in tests:
