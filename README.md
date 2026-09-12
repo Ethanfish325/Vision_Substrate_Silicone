@@ -54,8 +54,9 @@ Vision_Substrate_Silicone/
 │   ├── serial_comm.py               # 串口通信核心模块
 │   ├── serial_test_workflow.py      # 串口自动测试工作流（状态机）
 │   ├── product_manager.py           # 产品配置管理器（grid 行列、motion 双轴、io 映射）
-│   ├── controller.py                # SMC6480 运动控制卡封装（轴运动、IO 读写）
-│   ├── smcsh_dll.py                 # SMC6480 DLL 封装（ctypes 绑定、PE 导出表解析）
+│   ├── controller.py                # NMC1400 运动控制卡封装（轴运动、IO 读写）
+│   ├── nmc_sdk.py                   # NMC1400 DLL 封装（MCDLL_NET.dll，ctypes/WinDLL 绑定）
+│   ├── smcsh_dll.py                 # 【遗留】SMC6480 旧卡 DLL 封装（已不再引用）
 │   ├── mes_client.py                # MES 客户端（CheckStation 站位检测、SetStation 过站）
 │   └── inspection_workflow.py       # 自动化检测工作流（多板卡检测、拼接、QR、运动、DI 触发）
 │
@@ -74,7 +75,7 @@ Vision_Substrate_Silicone/
 │       ├── pipeline_editor.py       # 流水线编辑器
 │       ├── result_panel.py          # 结果显示面板
 │       ├── serial_dialog.py         # 串口通信对话框
-│       ├── smc_dialog.py            # SMC6480 轴控制面板
+│       ├── nmc_dialog.py            # NMC1400 轴控制面板
 │       ├── step_slot_widget.py      # 步骤插槽控件（支持拖拽排序）
 │       └── zoomable_label.py        # 可缩放图片显示控件
 │
@@ -125,16 +126,16 @@ Vision_Substrate_Silicone/
 │
 ├── plans/                           # 开发计划文档
 │   ├── stitch_qr_multi_board_plan.md # 多板卡拼接 + QR 识别方案
-│   ├── smc6480_axis_control_plan.md  # SMC6480 轴控制方案
+│   ├── smc6480_axis_control_plan.md  # 轴控制方案（历史文档，SMC6480 时期）
 │   └── control_mode_plan.md          # 控制模式方案
 │
 ├── test_io_demo.py                  # IO 电平检测测试 Demo（扫描端口 + 按键映射）
 ├── test_template_match_demo.py      # 模板匹配测试 Demo（多尺度匹配诊断）
 │
-└── *.dll                            # 大恒相机 SDK DLL + SMC6480 控制卡 DLL
+└── *.dll                            # 大恒相机 SDK DLL + NMC1400 控制卡 DLL
     ├── GxIAPI.dll                   # 相机 API 库
     ├── DxImageProc.dll              # 图像处理库
-    └── smcsh_mbs.dll                # SMC6480 运动控制卡库
+    └── MCDLL_NET.dll                # NMC1400 运动控制卡库（当前使用）
 ```
 
 ---
@@ -303,7 +304,7 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 - **图像拼接**：按行列网格紧密排列，实时刷新拼接整图（增量累积画布，内存优化）
 - **条码识别**：每张板卡识别二维码/一维码作为 SN，按 SN 保存数据并生成 XML（供 MES 上传）
 - **NG 逐点位确认**：全部检测完成后，对每个 NG 点位单独弹窗确认（硬件 OK/NG 按键），确认后更新该点位判定与 XML
-- **SMC6480 轴运动控制**：起始位 → 各点位（行优先）→ 结束位 → 取出确认
+- **NMC1400 轴运动控制**：起始位 → 各点位（行优先）→ 结束位 → 取出确认
 - **DI 触发**：上升沿检测，多按钮 IO 映射（启动/停止/复位/复判OK/复判NG/下料）
 - **检测工作线程化**：拍照/检测在工作线程执行，主线程保持空闲，DI 轮询持续运行
 - **STOP/复位流程**：STOP 停止所有动作并继续监听 IO，复位回到等待触发状态
@@ -311,11 +312,11 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 - 每个位置可关联独立的视觉方案
 - 统计信息：触发次数、OK 次数、NG 次数
 
-### 8. SMC6480 运动控制卡
+### 8. NMC1400 运动控制卡
 
-- **DLL 封装**（[`core/smcsh_dll.py`](core/smcsh_dll.py:1)）：ctypes 绑定、PE 导出表解析、容错函数绑定
-- **控制器封装**（[`core/controller.py`](core/controller.py:1)）：连接（以太网/串口）、轴运动（绝对/相对/JOG/回零）、IO 读写
-- **轴控制面板**（[`ui/widgets/smc_dialog.py`](ui/widgets/smc_dialog.py:1)）：手动 JOG、绝对/相对定位、回零、伺服使能
+- **DLL 封装**（[`core/nmc_sdk.py`](core/nmc_sdk.py:1)）：MCDLL_NET.dll 的 ctypes/WinDLL 绑定（32 位 __stdcall）、错误码与轴状态映射
+- **控制器封装**（[`core/controller.py`](core/controller.py:1)）：连接（网口自动发现）、轴运动（绝对/相对/JOG/回零）、伺服使能/软限位、IO 读写
+- **轴控制面板**（[`ui/widgets/nmc_dialog.py`](ui/widgets/nmc_dialog.py:1)）：手动 JOG、绝对/相对定位、回零、伺服使能、软限位
 - 双轴运动（X/Y），位置检测到位（get_pulse_position）
 - 输出端口控制：红灯/绿灯
 
@@ -382,8 +383,9 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 | [`serial_comm.py`](core/serial_comm.py) | 串口通信：端口扫描、参数配置、异步读取线程、收发统计 | QThread 异步读取 |
 | [`serial_test_workflow.py`](core/serial_test_workflow.py) | 串口自动测试工作流：状态机、触发解析、结果发送 | **状态机**、**策略模式** |
 | [`product_manager.py`](core/product_manager.py) | 产品配置管理：grid 行列、motion 双轴、io 映射、兼容迁移 | 函数式 |
-| [`controller.py`](core/controller.py) | SMC6480 运动控制卡：连接、轴运动、IO 读写、位置检测 | 封装 |
-| [`smcsh_dll.py`](core/smcsh_dll.py) | SMC6480 DLL 封装：ctypes 绑定、PE 导出表解析、容错函数绑定 | 封装 |
+| [`controller.py`](core/controller.py) | NMC1400 运动控制卡：连接、轴运动、IO 读写、位置检测 | 封装 |
+| [`nmc_sdk.py`](core/nmc_sdk.py) | NMC1400 DLL 封装：ctypes/WinDLL 绑定、轴状态/错误码映射 | 封装 |
+| [`smcsh_dll.py`](core/smcsh_dll.py) | 【遗留】SMC6480 旧卡 DLL 封装（已不再被主程序引用） | 封装 |
 | [`mes_client.py`](core/mes_client.py) | MES 客户端：CheckStation 站位检测、SetStation 过站、连接测试 | 封装 |
 | [`inspection_workflow.py`](core/inspection_workflow.py) | 自动化检测工作流：多板卡检测、拼接、QR、运动、DI 触发、工作线程、MES 回调 | **状态机**、QTimer、QThread |
 
@@ -577,7 +579,7 @@ gxipy               # 大恒 GalaxySDK（内置于项目 gxipy/ 目录）
 
 ## 打包说明
 
-> ⚠️ **必须使用 32 位 Python 打包**。本项目依赖的 `GxIAPI.dll` / `DxImageProc.dll`（大恒相机 SDK）与 `smcsh_mbs.dll`（SMC6480 运控卡）都是 32 位（x86）；若用 64 位 Python 打包，程序启动时会报
+> ⚠️ **必须使用 32 位 Python 打包**。本项目依赖的 `GxIAPI.dll` / `DxImageProc.dll`（大恒相机 SDK）与 `MCDLL_NET.dll`（NMC1400 运控卡）都是 32 位（x86）；若用 64 位 Python 打包，程序启动时会报
 > `NameError: name 'dll' is not defined`（gxwrapper 加载 32 位 GxIAPI.dll 失败），运动卡也会报位数不匹配。
 > `main.spec` 顶部已加位数校验，位数不对会直接中止打包并提示。
 
@@ -597,7 +599,7 @@ build_32.bat
 
 打包完成后可运行 `cleanup_after_build.bat` 清理不需要的大文件（如 Qt5 的 WebEngine、QML 等 DLL 和多语言翻译文件）。
 
-`runtime_hook.py` 会在打包后的程序启动时自动把 `_internal/`（开发环境为项目根目录）加入 DLL 搜索路径（`os.add_dll_directory` + `PATH`），并**以绝对路径预加载** `libiconv-2.dll` / `libzbar-32.dll`（条码识别 pyzbar 的依赖），确保 `GxIAPI.dll` / `DxImageProc.dll` / `smcsh_mbs.dll` / zbar 都能被正确加载。
+`runtime_hook.py` 会在打包后的程序启动时自动把 `_internal/`（开发环境为项目根目录）加入 DLL 搜索路径（`os.add_dll_directory` + `PATH`），并**以绝对路径预加载** `libiconv-2.dll` / `libzbar-32.dll`（条码识别 pyzbar 的依赖），确保 `GxIAPI.dll` / `DxImageProc.dll` / `MCDLL_NET.dll` / zbar 都能被正确加载。
 
 ### 打包后自检（排查"源码能用、打包后不行"）
 
@@ -654,7 +656,7 @@ Vision_Substrate_Silicone.exe --selftest-barcode <图片路径> [输出json路�
 11. 串口通信功能依赖 pyserial 库，请确保已安装
 12. 白平衡默认值（R=1.5, G=1.0, B=1.8）针对偏绿场景校正，可在相机面板中实时调节
 13. Gamma 校正和锐化强度可在 `camera_manager.py` 顶部调整，修改后重启程序生效
-14. SMC6480 运动控制卡需要 `smcsh_mbs.dll`（已从 git 排除，需手动放置到项目根目录）
+14. NMC1400 运动控制卡需要 `MCDLL_NET.dll`（已从 git 排除，需手动放置到项目根目录）；`smcsh_mbs.dll` 是旧 SMC6480 卡的库，已不再使用
 15. 产品配置的 `io` 字段使用 1-based IN 编号（如 IN2 填 2），可用 `test_io_demo.py` 扫描实际端口号
 16. 模板匹配支持多尺度搜索（`scale_min`/`scale_max`/`scale_step`），解决模板与目标尺寸不一致问题
 17. 相机图像翻转由 `camera_manager.py` 顶部的 `CAMERA_FLIP_180` 控制（True 表示水平+垂直翻转）
@@ -704,14 +706,14 @@ Vision_Substrate_Silicone.exe --selftest-barcode <图片路径> [输出json路�
   - 确认后更新该点位最终判定与对应 XML 的 test_result
 - **测试**：新增 [`tests/test_result_storage.py`](tests/test_result_storage.py:1)（保存逻辑）和 [`tests/test_ng_confirm_flow.py`](tests/test_ng_confirm_flow.py:1)（逐点位确认流程）
 
-### v3.0.0 (2026-08-27) — 多板卡托盘检测 + SMC6480 运动控制
+### v3.0.0 (2026-08-27) — 多板卡托盘检测 + NMC1400 运动控制
 
 - **多板卡托盘检测**：每个点位对应一张独立板卡，逐点拍照检测
 - **图像拼接**（[`vision/stitch.py`](vision/stitch.py:1)）：按行列网格紧密排列，增量累积画布，实时刷新拼接整图
 - **条码识别**（[`vision/tools/recognize.py`](vision/tools/recognize.py:1)）：QRCodeRecognize 算子升级为通用条码识别（二维码 + 一维码，pyzbar），识别结果作为板卡 SN
 - **XML 导出**（[`core/result_storage.py`](core/result_storage.py:1)）：按 SN 保存数据并生成 XML（供 MES 上传）
-- **SMC6480 运动控制卡**（[`core/controller.py`](core/controller.py:1)、[`core/smcsh_dll.py`](core/smcsh_dll.py:1)）：轴运动、IO 读写、位置检测
-- **轴控制面板**（[`ui/widgets/smc_dialog.py`](ui/widgets/smc_dialog.py:1)）：手动 JOG、绝对/相对定位、回零、伺服使能
+- **NMC1400 运动控制卡**（[`core/controller.py`](core/controller.py:1)、[`core/nmc_sdk.py`](core/nmc_sdk.py:1)）：轴运动、IO 读写、位置检测
+- **轴控制面板**（[`ui/widgets/nmc_dialog.py`](ui/widgets/nmc_dialog.py:1)）：手动 JOG、绝对/相对定位、回零、伺服使能、软限位
 - **DI 触发**：上升沿检测，多按钮 IO 映射（启动/停止/复位/复判OK/复判NG/下料）
 - **STOP/复位流程**：STOP 停止所有动作并继续监听 IO，复位回到等待触发状态
 - **模板匹配多尺度**：自动搜索最佳缩放比例，解决模板与目标尺寸不一致问题
@@ -810,7 +812,7 @@ Vision_Substrate_Silicone.exe --selftest-barcode <图片路径> [输出json路�
 | **GUI 框架** | PyQt5（Qt 信号/槽机制） |
 | **图像处理** | OpenCV 4.x（numpy 底层） |
 | **工业相机** | 大恒 GalaxySDK（gxipy） |
-| **运动控制卡** | SMC6480（smcsh_mbs.dll，ctypes 封装） |
+| **运动控制卡** | NMC1400（MCDLL_NET.dll，ctypes/WinDLL 封装） |
 | **串口通信** | pyserial（异步 QThread 读取） |
 | **打包部署** | PyInstaller |
 | **数据存储** | JSON（方案/配置/用户）、CSV（日志）、XML（MES 上传）、图像文件 |

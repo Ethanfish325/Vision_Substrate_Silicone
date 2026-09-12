@@ -7,7 +7,7 @@ import shutil
 # 位数校验(必须保留在最前)
 # ============================================================
 # 本项目依赖的三个本地 DLL 均为 32 位(x86):
-#     GxIAPI.dll / DxImageProc.dll (大恒相机 SDK)、smcsh_mbs.dll (SMC6480 运控卡)
+#     GxIAPI.dll / DxImageProc.dll (大恒相机 SDK)、MCDLL_NET.dll (NMC1400 运控卡)
 # 若用 64 位 Python 打包,32 位 DLL 无法载入 64 位进程,启动时会报
 #     NameError: name 'dll' is not defined   (gxwrapper 加载 GxIAPI.dll 失败)
 # 或运动卡 DLL 位数不匹配。因此这里强制要求 32 位解释器。
@@ -16,7 +16,7 @@ import struct as _struct
 if _struct.calcsize('P') * 8 != 32:
     raise SystemExit(
         "[打包中止] 必须使用 32 位 Python 打包,当前解释器为 %d 位!\n"
-        "  原因: GxIAPI.dll / DxImageProc.dll / smcsh_mbs.dll 均为 32 位(x86)。\n"
+        "  原因: GxIAPI.dll / DxImageProc.dll / MCDLL_NET.dll 均为 32 位(x86)。\n"
         "  请运行 build_32.bat,或显式指定 32 位解释器,例如:\n"
         "    \"%%LOCALAPPDATA%%\\Programs\\Python\\Python39-32\\python.exe\" -m PyInstaller main.spec"
         % (_struct.calcsize('P') * 8))
@@ -232,18 +232,22 @@ for _dll_path in _daheng_dlls:
     binaries.append((_dll_path, '.'))  # '.' 表示 _internal/ 根目录
 
 # ============================================================
-# SMC6480 运动控制卡 DLL 打包
+# NMC1400 运动控制卡 DLL 打包
 # ============================================================
-# smcsh_mbs.dll 通过 core/smcsh_dll.py 的 ctypes.WinDLL 加载。
-# 打包后 smcsh_dll.py 位于 _internal/ 下，其 _resolve_dll_path 会
-# 以模块所在目录（_internal/）为基准查找 DLL，因此 DLL 需放在
-# _internal/ 根目录（与 smcsh_dll.py 的 base_dir 一致）。
-_smc_dll = os.path.join(os.getcwd(), 'smcsh_mbs.dll')
-if os.path.exists(_smc_dll):
-    binaries.append((_smc_dll, '.'))  # '.' 表示 _internal/ 根目录
-    print(f"[INFO] 找到 SMC6480 DLL（项目目录）: {_smc_dll}")
-else:
-    print(f"[WARN] 未找到 smcsh_mbs.dll，SMC6480 运动控制功能将不可用")
+# MCDLL_NET.dll 通过 core/nmc_sdk.py 的 ctypes.WinDLL 加载（32 位 __stdcall）。
+# 打包后 core/nmc_sdk.py 位于 _internal/core/ 下，其 load_dll() 会按
+# 「模块所在目录 -> 当前工作目录」顺序查找 DLL，因此把 DLL 放在
+# _internal/ 根目录即可（同时保留项目根目录的副本供源码运行）。
+#
+# 说明：smcsh_mbs.dll 是旧 SMC6480 卡的库，现已不再被程序引用；
+#       如果现场还需要（回退旧卡），可手动把文件放到 exe 同级目录。
+for _motion_dll_name in ['MCDLL_NET.dll']:
+    _motion_dll = os.path.join(os.getcwd(), _motion_dll_name)
+    if os.path.exists(_motion_dll):
+        binaries.append((_motion_dll, '.'))  # '.' 表示 _internal/ 根目录
+        print(f"[INFO] 找到 NMC1400 运控卡 DLL（项目目录）: {_motion_dll}")
+    else:
+        print(f"[WARN] 未找到 {_motion_dll_name}，NMC1400 运动控制功能将不可用")
 
 # ============================================================
 # pyzbar（条码识别）DLL 打包

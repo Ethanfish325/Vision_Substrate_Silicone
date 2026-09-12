@@ -6,7 +6,7 @@ rem ============================================================
 rem  32 位打包脚本 (必须用 32 位 Python)
 rem ============================================================
 rem  本项目依赖的 GxIAPI.dll / DxImageProc.dll(大恒相机 SDK)与
-rem  smcsh_mbs.dll(SMC6480 运控卡)都是 32 位(x86),因此必须用
+rem  MCDLL_NET.dll(NMC1400 运控卡)都是 32 位(x86),因此必须用
 rem  32 位 Python 打包;用 64 位打包会在启动时报
 rem  "NameError: name 'dll' is not defined"。
 rem

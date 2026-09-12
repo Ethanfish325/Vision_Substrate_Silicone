@@ -2,7 +2,12 @@
 """
 smcsh_dll.py
 ============
-SMC6480 运动控制器动态链接库 (smcsh_mbs.dll) 的 ctypes 封装模块。
+【遗留模块，已不再被主程序引用】
+SMC6480（雷赛）运动控制卡动态链接库 (smcsh_mbs.dll) 的 ctypes 封装。
+
+⚠️ 本项目现已改用 NMC1400 控制卡（MCDLL_NET.dll），轴控制请走
+   core/nmc_sdk.py + core/controller.py。本文件仅保留给旧卡诊断脚本
+   （如 tests/diag_smc_home.py）使用，新代码不要 import 它。
 
 本模块负责加载 smcsh_mbs.dll，并封装与官方程序一致的底层函数：
   - 连接控制器相关函数（SMCOpen / SMCOpenEth / SMCOpenCom / SMCClose 等）
@@ -52,7 +57,7 @@ SYS_STATE_GTEACHING       = 11  # 示教
 SYS_STATE_CANNOT_CONNECT  = 50  # 链接不上
 
 # 错误码（软件手册 5.3 节）
-ERR_NOERR                = 0    # 成功
+SUCCESS                = 0    # 成功
 ERRCODE_UNKNOWN          = 1    # 未知错误
 ERRCODE_PARAERR          = 2    # 参数错误
 ERRCODE_TIMEOUT          = 3    # 操作超时
@@ -66,7 +71,7 @@ ERRCODE_SENDERR          = 10   # 发送错误
 
 # 错误码 -> 中文描述映射
 ERRCODE_DESC = {
-    ERR_NOERR:                 "成功",
+    SUCCESS:                   "成功",
     ERRCODE_UNKNOWN:           "未知错误",
     ERRCODE_PARAERR:           "参数错误",
     ERRCODE_TIMEOUT:           "操作超时",
@@ -491,7 +496,7 @@ class SMCSHDLL:
     def close(self, handle) -> int:
         """关闭链接（SMCClose）。"""
         if not handle:
-            return ERR_NOERR
+            return SUCCESS
         return self._dll.SMCClose(handle)
 
     def set_timeout(self, handle, timeout_ms: int) -> int:

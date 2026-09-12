@@ -155,7 +155,7 @@ QR 识别结果作为该板卡的 SN（ID），用于保存图片与生成 XML�
 - 手动测试模式保留原网格逻辑（不拼接）。
 
 ### 4.10 `ui/main_window.py` — 注入 Controller 到工作流
-- 将 `self._smc_controller` 注入 `InspectionWorkflow`。
+- 将 `self._nmc_controller ` 注入 `InspectionWorkflow`。
 - 连接"取出确认"按钮信号。
 
 ## 五、数据流

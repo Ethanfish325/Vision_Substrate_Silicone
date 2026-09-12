@@ -39,6 +39,10 @@ Thumbs.db
 # DLL dependencies - too large for git, need manual placement
 *.dll
 
+# 厂家手册（本地参考资料，体积较大，不入库）
+NMC1400_硬件手册.pdf
+NMCxxxx_编程手册.pdf
+
 # Reports
 视觉检测系统_项目总结报告.xlsx
 generate_report.py

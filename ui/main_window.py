@@ -28,14 +28,13 @@ from .widgets.camera_panel import CameraPanel
 from core.paths import SCHEME_DIR
 from .widgets.pipeline_editor import PipelineEditor
 from .widgets.result_panel import ResultPanel
-from .widgets.smc_dialog import SMCAxisControlPanel
+from .widgets.nmc_dialog import SMCAxisControlPanel
 
 from core.serial_comm import SerialCommManager
 from core.serial_test_workflow import SerialTestWorkflow, WorkflowConfig
 from core.inspection_workflow import InspectionWorkflow
 from core.product_manager import list_products, load_product, save_product, create_default_config
-from core.controller import Controller, ControllerError
-from .widgets.smc_dialog import DEFAULT_SMC_IP
+from core.controller import Controller, ControllerError, DEFAULT_HOME_PARAMS
 
 import hashlib
 from core.paths import USERS_FILE
@@ -235,8 +234,8 @@ class MainWindow(QMainWindow):
         # 自动化检测面板（在 _build_automation_page 中创建）
         self._inspection_panel = None
 
-        # SMC6480 运动控制卡
-        self._smc_controller: Optional[Controller] = None
+        # NMC1400 运动控制卡
+        self._nmc_controller: Optional[Controller] = None
 
         # 回零状态机（未回零 / 回零中 / 已回零）
         self._home_state = "未回零"
@@ -251,7 +250,7 @@ class MainWindow(QMainWindow):
         self._load_schemes()
         self._auto_load_default_scheme()
         self._init_sdk()
-        self._init_smc()
+        self._init_nmc()
 
         # 启动后延迟自动连接相机（等待 UI 完全渲染）
         QTimer.singleShot(500, self._auto_connect_camera)
@@ -696,8 +695,8 @@ class MainWindow(QMainWindow):
         # 传入串口通信管理器（用于扫描头）
         if self._serial_comm is not None:
             self._inspection_workflow.set_serial_comm(self._serial_comm)
-        # 传入轴控制器（若已初始化；_smc_controller 在 __init__ 中稍后定义）
-        smc = getattr(self, '_smc_controller', None)
+        # 传入轴控制器（若已初始化；_nmc_controller 在 __init__ 中稍后定义）
+        smc = getattr(self, '_nmc_controller', None)
         if smc is not None:
             self._inspection_workflow.set_controller(smc)
         # 自动化流程结束信号 → 指示灯控制（OK 亮绿灯，NG 亮红灯）
@@ -917,7 +916,7 @@ class MainWindow(QMainWindow):
         # ── 标签页2: 产品配置 ──
         self._build_product_config_tab()
 
-        # ── 标签页3: 轴控制（SMC6480）──
+        # ── 标签页3: 轴控制（NMC1400）──
         self._smc_panel = SMCAxisControlPanel()
         self._smc_panel.connection_changed.connect(self._on_smc_connection_changed)
         self.eng_right_tabs.addTab(self._smc_panel, "🎮 轴控制")
@@ -1397,13 +1396,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             log_error(f"SDK初始化失败: {e}")
 
-    def _init_smc(self):
-        """初始化 SMC6480 运动控制卡并自动连接（IP 写死为默认值）。"""
+    def _init_nmc(self):
+        """初始化 NMC1400 运动控制卡并自动连接（网口自动发现，无需 IP）"""
         try:
-            self._smc_controller = Controller()
+            self._nmc_controller= Controller()
+            log_info("NMC1400 Controller 实例创建成功")
         except ControllerError as e:
-            log_error(f"SMC6480 DLL 加载失败: {e}")
-            self._smc_controller = None
+            log_error(f"NMC1400 Controller 实例创建失败: {e}")
+            self._nmc_controller= None
             # 将控制器传给轴控制面板（未连接状态）
             if hasattr(self, '_smc_panel') and self._smc_panel is not None:
                 self._smc_panel.set_controller(None)
@@ -1411,54 +1411,56 @@ class MainWindow(QMainWindow):
 
         # 将控制器传给轴控制面板（共享实例）
         if hasattr(self, '_smc_panel') and self._smc_panel is not None:
-            self._smc_panel.set_controller(self._smc_controller)
+            self._smc_panel.set_controller(self._nmc_controller)
 
         # 将控制器注入自动化工作流（启用轴运动）
         if hasattr(self, '_inspection_workflow') and self._inspection_workflow is not None:
-            self._inspection_workflow.set_controller(self._smc_controller)
+            self._inspection_workflow.set_controller(self._nmc_controller)
 
-        # 自动连接（IP 写死）
+        # 自动连接（NMC1400 由 DLL 通过网口自动发现控制卡，不需要 IP）
         try:
-            self._smc_controller.connect_eth(DEFAULT_SMC_IP)
-            log_info(f"SMC6480 自动连接成功: {DEFAULT_SMC_IP}")
+            self._nmc_controller.connect()
+            log_info("NMC1400 控制卡自动连接成功")
             # 连接成功后先灭灯（其他运行阶段保持灭灯，避免状态冲突）
             self._set_light(red_on=False, green_on=False)
             # 注意：上电后各轴保持当前位置，不自动执行任何回零动作。
             # 回零改为手动「复位」按钮触发（见 _start_home_sequence）。
             self._set_home_state("未回零")
         except ControllerError as e:
-            log_warning(f"SMC6480 自动连接失败: {e}（可通过轴控制面板手动重连）")
+            log_warning(f"NMC1400 自动连接失败: {e}（可通过轴控制面板手动重连）")
             self._set_home_state("未回零")
 
         # 自动连接完成后刷新轴控制面板的连接状态显示
         # （set_controller 会触发 _update_connection_ui，根据 is_connected 更新 UI）
         if hasattr(self, '_smc_panel') and self._smc_panel is not None:
-            self._smc_panel.set_controller(self._smc_controller)
+            self._smc_panel.set_controller(self._nmc_controller)
 
-    # 回零参数（写死在代码中，与官方程序一致，避免跑过限位）
-    HOME_START_SPEED = 100    # 启动速度
-    HOME_ZERO_SPEED = 1000     # 回零低速（回零时的速度）
-    HOME_ACC = 1000           # 加速度
-    HOME_DEC = 1000           # 减速度
-    HOME_S_CURVE = 0.0        # S 曲线时间
-    HOME_ZERO_DIR = 0         # 回零方向
-    HOME_ZERO_MODE = 3        # 回零模式
+    # 回零参数（写死在代码中，避免跑过限位）
+    # ⚠️ home_mode 必须按现场机械结构/开关安装情况，从编程手册「回原点模式选择参考表」
+    #    中选择：3/19/20/21/22 = 用原点开关；17/18 = 用正负限位开关；33/34 = 用 Index(Z相)。
+    #    模式选错会让轴往错误方向找原点，首次调试请先把 high_speed 调低。
+    HOME_PARAMS = dict(
+        DEFAULT_HOME_PARAMS,
+        home_mode=3,          # 安装原点开关，正方向找原点负边外侧（负方向偏移）
+        limit_logic=0,        # 正负限位触发电平：0=低电平 1=高电平
+        home_logic=0,         # 原点开关触发电平：0=低电平 1=高电平
+        index_logic=0,        # Index(Z相) 触发电平：0=低电平 1=高电平
+        high_speed=10000.0,   # 高速段速度（脉冲/s）
+        low_speed=1000.0,     # 低速段速度（脉冲/s，精确定位）
+        offset=0,             # 回零完成后的偏移量（脉冲）
+        trigger_source=0,     # 捕捉位置模式 0=指令位置 1=编码器位置
+    )
 
     def _set_home_speed(self, iaxis: int):
-        """设置指定轴的回零参数（与官方程序一致，通过 set_home_params）。"""
+        """设置指定轴的回零参数（NMC1400：MCF_Search_Home_Set_Net）。"""
         try:
-            self._smc_controller.set_home_params(
-                iaxis,
-                start_speed=self.HOME_START_SPEED,
-                zero_speed=self.HOME_ZERO_SPEED,
-                acc=self.HOME_ACC,
-                dec=self.HOME_DEC,
-                s_curve=self.HOME_S_CURVE,
-                zero_dir=self.HOME_ZERO_DIR,
-                zero_mode=self.HOME_ZERO_MODE,
+            self._nmc_controller.set_home_params(iaxis, **self.HOME_PARAMS)
+            log_info(
+                f"轴 {iaxis} 回零参数已设置 (模式={self.HOME_PARAMS['home_mode']}, "
+                f"高速段={self.HOME_PARAMS['high_speed']}, "
+                f"低速段={self.HOME_PARAMS['low_speed']}, "
+                f"原点电平={'低' if self.HOME_PARAMS['home_logic'] == 0 else '高'})"
             )
-            log_info(f"轴 {iaxis} 回零参数已设置 (低速={self.HOME_ZERO_SPEED}, "
-                     f"启动={self.HOME_START_SPEED}, 加速度={self.HOME_ACC})")
         except Exception as e:  # noqa: BLE001
             log_warning(f"设置轴 {iaxis} 回零参数失败: {e}")
 
@@ -1489,7 +1491,7 @@ class MainWindow(QMainWindow):
         回零前设置回零速度（避免跑过限位），回零过程中显示黄灯。
         所有轴同时启动硬件回零（并行），轮询等待全部完成。
         """
-        if self._smc_controller is None or not self._smc_controller.is_connected:
+        if self._nmc_controller is None or not self._nmc_controller.is_connected:
             log_warning("控制器未连接，无法回零")
             return
 
@@ -1503,6 +1505,8 @@ class MainWindow(QMainWindow):
         self._set_light(red_on=True, green_on=True)
         self._set_home_state("回零中")
         self._home_in_progress = True
+        self._home_start_time = time.time()
+        self._home_seen_homing = False
 
         # 回零轴： X/Y 轴（并行回零）
         self._home_axes = [0, 1]
@@ -1517,7 +1521,7 @@ class MainWindow(QMainWindow):
         for iaxis in self._home_axes:
             try:
                 self._set_home_speed(iaxis)
-                self._smc_controller.home_move(iaxis)
+                self._nmc_controller.home_move(iaxis)
                 log_info(f"轴 {iaxis} 开始硬件回零")
             except Exception as e:  # noqa: BLE001
                 log_warning(f"轴 {iaxis} 回零启动失败: {e}")
@@ -1533,10 +1537,10 @@ class MainWindow(QMainWindow):
 
     def _abort_home_sequence(self):
         """急停回零：立即停止所有轴回零，回到未回零状态。"""
-        if self._smc_controller is not None and self._smc_controller.is_connected:
+        if self._nmc_controller is not None and self._nmc_controller.is_connected:
             for iaxis in self._home_axes:
                 try:
-                    self._smc_controller.imd_stop(iaxis)
+                    self._nmc_controller.imd_stop(iaxis)
                 except Exception as e:  # noqa: BLE001
                     log_warning(f"急停轴 {iaxis} 失败: {e}")
         if hasattr(self, '_home_poll_timer') and self._home_poll_timer is not None:
@@ -1547,15 +1551,14 @@ class MainWindow(QMainWindow):
         log_warning("回零已急停，各轴保持当前位置")
 
     def _on_home_poll(self):
-        """轮询判断回零完成（并行回零，用 Motion_Home_IfHoming 判断各轴是否仍在回零中）。
+        """轮询判断回零完成（并行回零，用 MCF_Search_Home_Get_State_Net 判断各轴状态）。
 
-        注意：不能用 Motion_CheckDown 判断回零完成。SMC6480 硬件回零完成后，
-        轴虽已停止、位置归零，但控制卡内部仍认为该轴处于"回零中"状态，
-        Motion_CheckDown 会一直返回 False（未停止），导致永远显示"回零中"。
-        正确做法是用 Motion_Home_IfHoming：返回 True 表示仍在回零中，
-        返回 False 表示回零流程已结束。调用失败时回退固定延时。
+        NMC1400 回零状态返回值：0=回零成功, 31=回零错误, 32=正在回零点。
+        注意不能用轴停止状态判断回零完成——回零完成后轴会停止、位置归零，
+        但"回零状态"才是权威标志。
+        查询异常时回退到固定延时兜底，避免界面卡死。
         """
-        if self._smc_controller is None or not self._smc_controller.is_connected:
+        if self._nmc_controller is None or not self._nmc_controller.is_connected:
             if hasattr(self, '_home_poll_timer') and self._home_poll_timer is not None:
                 self._home_poll_timer.stop()
             self._home_in_progress = False
@@ -1569,10 +1572,10 @@ class MainWindow(QMainWindow):
             if self._home_done.get(iaxis, False):
                 continue  # 该轴已完成
             try:
-                still_homing = self._smc_controller.if_home_moving(iaxis)
+                home_state = self._nmc_controller.get_home_state(iaxis)
             except Exception as e:
-                # if_home_moving 调用失败（部分 DLL 版本会返回错误），回退到固定延时
-                log_warning(f"if_home_moving 轴 {iaxis} 失败，回退固定延时: {e}")
+                # 回零状态查询失败，回退到固定延时，避免界面卡死
+                log_warning(f"读取轴 {iaxis} 回零状态失败，回退固定延时: {e}")
                 self._home_wait_count += 1
                 if self._home_wait_count < self._home_wait_ticks:
                     return
@@ -1581,13 +1584,23 @@ class MainWindow(QMainWindow):
                 self._home_done[iaxis] = True
                 log_info(f"轴 {iaxis} 回零完成 (固定延时兜底)")
                 continue
-            if still_homing:
+            if home_state == 32:
                 # 该轴仍在回零中，未全部完成
+                self._home_seen_homing = True
+                all_done = False
+            elif home_state == 31:
+                # 回零错误：记录并结束该轴，避免一直等下去
+                self._home_done[iaxis] = True
+                log_error(f"轴 {iaxis} 回零错误 (状态码 31)，请检查回零模式/触发电平/传感器")
+            elif not self._home_seen_homing and time.time() - getattr(
+                    self, '_home_start_time', 0) < 0.5:
+                # 刚下发回零指令时，控制卡状态寄存器可能还是上一次的"0=回零成功"，
+                # 这里给 0.5s 让状态先切到"32=正在回零点"，避免误判为已完成
                 all_done = False
             else:
-                # 该轴回零流程已结束（轴已停止、位置归零）
+                # 0 = 回零成功
                 self._home_done[iaxis] = True
-                log_info(f"轴 {iaxis} 回零完成 (if_home_moving)")
+                log_info(f"轴 {iaxis} 回零完成")
 
         if not all_done:
             # 仍有轴在回零中，继续等待
@@ -1622,14 +1635,14 @@ class MainWindow(QMainWindow):
         if connected:
             # 面板手动重连成功，同步共享控制器实例
             if hasattr(self, '_smc_panel') and self._smc_panel is not None:
-                self._smc_controller = self._smc_panel.controller
-            log_info("SMC6480 已通过轴控制面板手动重连")
+                self._nmc_controller = self._smc_panel.controller
+            log_info("NMC1400 已通过轴控制面板手动重连")
         else:
-            log_info("SMC6480 已断开")
+            log_info("NMC1400 已断开")
 
         # 同步控制器到自动化工作流（启用/禁用轴运动）
         if hasattr(self, '_inspection_workflow') and self._inspection_workflow is not None:
-            self._inspection_workflow.set_controller(self._smc_controller)
+            self._inspection_workflow.set_controller(self._nmc_controller)
 
     def _auto_connect_camera(self):
         """启动时自动搜索并连接相机"""
@@ -2608,9 +2621,9 @@ class MainWindow(QMainWindow):
         """安全设置指示灯状态（红/绿/黄三色，二合一灯）。
 
         红灯 + 绿灯同时点亮时物理上显示黄灯。
-        通过 _smc_controller.set_light_state 控制 OUT3/OUT4。
+        通过 _nmc_controller.set_light_state 控制 OUT3/OUT4。
         """
-        smc = getattr(self, '_smc_controller', None)
+        smc = getattr(self, '_nmc_controller', None)
         if smc is None or not smc.is_connected:
             return
         try:
@@ -2671,6 +2684,19 @@ class MainWindow(QMainWindow):
         if self._serial_comm is not None:
             self._serial_comm.cleanup()
             self._serial_comm = None
+        # 断开运动控制卡（必须先停止所有轴，再关连接）
+        # 注意：Controller.disconnect() 会先解除"链接超时看门狗"，
+        #       否则断链会让控制卡锁存急停状态，需要断电重启才能恢复。
+        if self._nmc_controller is not None:
+            try:
+                self._nmc_controller.stop_all()
+            except Exception as e:  # noqa: BLE001
+                log_warning(f"关闭前停止所有轴失败: {e}")
+            try:
+                self._nmc_controller.disconnect()
+            except Exception as e:  # noqa: BLE001
+                log_warning(f"关闭控制卡失败: {e}")
+            self._nmc_controller = None
         try:
             if self._camera_panel is not None:
                 self._camera_panel.close_camera()

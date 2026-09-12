@@ -3,8 +3,8 @@
 PyInstaller Runtime Hook
 =======================
 在打包后的程序启动时执行，用于设置 DLL 搜索路径，
-确保 GxIAPI.dll / DxImageProc.dll（大恒相机 SDK）与 smcsh_mbs.dll
-（SMC6480 运控卡）能被正确加载。
+确保 GxIAPI.dll / DxImageProc.dll（大恒相机 SDK）与 MCDLL_NET.dll
+（NMC1400 运控卡）能被正确加载。
 
 注意：这三个 DLL 都是 32 位(x86)，因此程序必须用 32 位 Python 打包
 （见 main.spec 顶部的位数校验与 build_32.bat）。
@@ -26,7 +26,7 @@ def _setup_daheng_dll_path():
             _internal/
                 GxIAPI.dll          <-- 大恒相机 SDK DLL
                 DxImageProc.dll     <-- 大恒图像处理 DLL
-                smcsh_mbs.dll       <-- SMC6480 运控卡 DLL
+                MCDLL_NET.dll       <-- NMC1400 运控卡 DLL
                 pyzbar/
                     libzbar-32.dll  <-- 条码识别(pyzbar)依赖
                     libiconv-2.dll
