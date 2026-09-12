@@ -238,9 +238,6 @@ for _dll_path in _daheng_dlls:
 # 打包后 core/nmc_sdk.py 位于 _internal/core/ 下，其 load_dll() 会按
 # 「模块所在目录 -> 当前工作目录」顺序查找 DLL，因此把 DLL 放在
 # _internal/ 根目录即可（同时保留项目根目录的副本供源码运行）。
-#
-# 说明：smcsh_mbs.dll 是旧 SMC6480 卡的库，现已不再被程序引用；
-#       如果现场还需要（回退旧卡），可手动把文件放到 exe 同级目录。
 for _motion_dll_name in ['MCDLL_NET.dll']:
     _motion_dll = os.path.join(os.getcwd(), _motion_dll_name)
     if os.path.exists(_motion_dll):

@@ -32,7 +32,7 @@ CARD_INFO_DISCONNECTED = "NMC1400（4轴，网口自动发现）"
 AXIS_NAMES = ["X", "Y", "Z"]
 
 
-class SMCAxisControlPanel(QWidget):
+class NMCAxisControlPanel(QWidget):
     """NMC1400 轴控制面板（可内嵌到设计模式标签页）。"""
 
     # 连接状态变化信号（True=已连接, False=未连接）

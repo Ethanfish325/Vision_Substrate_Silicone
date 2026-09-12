@@ -56,7 +56,6 @@ Vision_Substrate_Silicone/
 │   ├── product_manager.py           # 产品配置管理器（grid 行列、motion 双轴、io 映射）
 │   ├── controller.py                # NMC1400 运动控制卡封装（轴运动、IO 读写）
 │   ├── nmc_sdk.py                   # NMC1400 DLL 封装（MCDLL_NET.dll，ctypes/WinDLL 绑定）
-│   ├── smcsh_dll.py                 # 【遗留】SMC6480 旧卡 DLL 封装（已不再引用）
 │   ├── mes_client.py                # MES 客户端（CheckStation 站位检测、SetStation 过站）
 │   └── inspection_workflow.py       # 自动化检测工作流（多板卡检测、拼接、QR、运动、DI 触发）
 │
@@ -126,7 +125,7 @@ Vision_Substrate_Silicone/
 │
 ├── plans/                           # 开发计划文档
 │   ├── stitch_qr_multi_board_plan.md # 多板卡拼接 + QR 识别方案
-│   ├── smc6480_axis_control_plan.md  # 轴控制方案（历史文档，SMC6480 时期）
+│   ├── nmc1400_migration.md          # SMC6480 → NMC1400 迁移说明（坑位清单、现场核对项）
 │   └── control_mode_plan.md          # 控制模式方案
 │
 ├── test_io_demo.py                  # IO 电平检测测试 Demo（扫描端口 + 按键映射）
@@ -385,7 +384,6 @@ IDLE → MONITORING → WAITING → CAPTURING → TESTING
 | [`product_manager.py`](core/product_manager.py) | 产品配置管理：grid 行列、motion 双轴、io 映射、兼容迁移 | 函数式 |
 | [`controller.py`](core/controller.py) | NMC1400 运动控制卡：连接、轴运动、IO 读写、位置检测 | 封装 |
 | [`nmc_sdk.py`](core/nmc_sdk.py) | NMC1400 DLL 封装：ctypes/WinDLL 绑定、轴状态/错误码映射 | 封装 |
-| [`smcsh_dll.py`](core/smcsh_dll.py) | 【遗留】SMC6480 旧卡 DLL 封装（已不再被主程序引用） | 封装 |
 | [`mes_client.py`](core/mes_client.py) | MES 客户端：CheckStation 站位检测、SetStation 过站、连接测试 | 封装 |
 | [`inspection_workflow.py`](core/inspection_workflow.py) | 自动化检测工作流：多板卡检测、拼接、QR、运动、DI 触发、工作线程、MES 回调 | **状态机**、QTimer、QThread |
 
@@ -656,7 +654,7 @@ Vision_Substrate_Silicone.exe --selftest-barcode <图片路径> [输出json路�
 11. 串口通信功能依赖 pyserial 库，请确保已安装
 12. 白平衡默认值（R=1.5, G=1.0, B=1.8）针对偏绿场景校正，可在相机面板中实时调节
 13. Gamma 校正和锐化强度可在 `camera_manager.py` 顶部调整，修改后重启程序生效
-14. NMC1400 运动控制卡需要 `MCDLL_NET.dll`（已从 git 排除，需手动放置到项目根目录）；`smcsh_mbs.dll` 是旧 SMC6480 卡的库，已不再使用
+14. NMC1400 运动控制卡需要 `MCDLL_NET.dll`（已从 git 排除，需手动放置到项目根目录）
 15. 产品配置的 `io` 字段使用 1-based IN 编号（如 IN2 填 2），可用 `test_io_demo.py` 扫描实际端口号
 16. 模板匹配支持多尺度搜索（`scale_min`/`scale_max`/`scale_step`），解决模板与目标尺寸不一致问题
 17. 相机图像翻转由 `camera_manager.py` 顶部的 `CAMERA_FLIP_180` 控制（True 表示水平+垂直翻转）

@@ -28,7 +28,7 @@ from .widgets.camera_panel import CameraPanel
 from core.paths import SCHEME_DIR
 from .widgets.pipeline_editor import PipelineEditor
 from .widgets.result_panel import ResultPanel
-from .widgets.nmc_dialog import SMCAxisControlPanel
+from .widgets.nmc_dialog import NMCAxisControlPanel
 
 from core.serial_comm import SerialCommManager
 from core.serial_test_workflow import SerialTestWorkflow, WorkflowConfig
@@ -696,9 +696,9 @@ class MainWindow(QMainWindow):
         if self._serial_comm is not None:
             self._inspection_workflow.set_serial_comm(self._serial_comm)
         # 传入轴控制器（若已初始化；_nmc_controller 在 __init__ 中稍后定义）
-        smc = getattr(self, '_nmc_controller', None)
-        if smc is not None:
-            self._inspection_workflow.set_controller(smc)
+        ctrl = getattr(self, '_nmc_controller', None)
+        if ctrl is not None:
+            self._inspection_workflow.set_controller(ctrl)
         # 自动化流程结束信号 → 指示灯控制（OK 亮绿灯，NG 亮红灯）
         self._inspection_workflow.all_results_ready.connect(self._on_workflow_all_results)
         # 启动触发信号 → 立即熄灭指示灯（8 秒内再次启动则灯直接熄灭）
@@ -917,9 +917,9 @@ class MainWindow(QMainWindow):
         self._build_product_config_tab()
 
         # ── 标签页3: 轴控制（NMC1400）──
-        self._smc_panel = SMCAxisControlPanel()
-        self._smc_panel.connection_changed.connect(self._on_smc_connection_changed)
-        self.eng_right_tabs.addTab(self._smc_panel, "🎮 轴控制")
+        self._axis_panel = NMCAxisControlPanel()
+        self._axis_panel.connection_changed.connect(self._on_axis_connection_changed)
+        self.eng_right_tabs.addTab(self._axis_panel, "🎮 轴控制")
 
         right_eng_layout.addWidget(self.eng_log)
         right_eng_layout.addWidget(self.eng_right_tabs, 1)
@@ -1405,13 +1405,13 @@ class MainWindow(QMainWindow):
             log_error(f"NMC1400 Controller 实例创建失败: {e}")
             self._nmc_controller= None
             # 将控制器传给轴控制面板（未连接状态）
-            if hasattr(self, '_smc_panel') and self._smc_panel is not None:
-                self._smc_panel.set_controller(None)
+            if hasattr(self, '_axis_panel') and self._axis_panel is not None:
+                self._axis_panel.set_controller(None)
             return
 
         # 将控制器传给轴控制面板（共享实例）
-        if hasattr(self, '_smc_panel') and self._smc_panel is not None:
-            self._smc_panel.set_controller(self._nmc_controller)
+        if hasattr(self, '_axis_panel') and self._axis_panel is not None:
+            self._axis_panel.set_controller(self._nmc_controller)
 
         # 将控制器注入自动化工作流（启用轴运动）
         if hasattr(self, '_inspection_workflow') and self._inspection_workflow is not None:
@@ -1432,8 +1432,8 @@ class MainWindow(QMainWindow):
 
         # 自动连接完成后刷新轴控制面板的连接状态显示
         # （set_controller 会触发 _update_connection_ui，根据 is_connected 更新 UI）
-        if hasattr(self, '_smc_panel') and self._smc_panel is not None:
-            self._smc_panel.set_controller(self._nmc_controller)
+        if hasattr(self, '_axis_panel') and self._axis_panel is not None:
+            self._axis_panel.set_controller(self._nmc_controller)
 
     # 回零参数（写死在代码中，避免跑过限位）
     # ⚠️ home_mode 必须按现场机械结构/开关安装情况，从编程手册「回原点模式选择参考表」
@@ -1630,12 +1630,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_inspection_workflow') and self._inspection_workflow is not None:
             self._inspection_workflow.on_home_completed()
 
-    def _on_smc_connection_changed(self, connected: bool):
+    def _on_axis_connection_changed(self, connected: bool):
         """轴控制面板连接状态变化回调 - 同步主窗口的控制器引用。"""
         if connected:
             # 面板手动重连成功，同步共享控制器实例
-            if hasattr(self, '_smc_panel') and self._smc_panel is not None:
-                self._nmc_controller = self._smc_panel.controller
+            if hasattr(self, '_axis_panel') and self._axis_panel is not None:
+                self._nmc_controller = self._axis_panel.controller
             log_info("NMC1400 已通过轴控制面板手动重连")
         else:
             log_info("NMC1400 已断开")
@@ -2623,11 +2623,11 @@ class MainWindow(QMainWindow):
         红灯 + 绿灯同时点亮时物理上显示黄灯。
         通过 _nmc_controller.set_light_state 控制 OUT3/OUT4。
         """
-        smc = getattr(self, '_nmc_controller', None)
-        if smc is None or not smc.is_connected:
+        ctrl = getattr(self, '_nmc_controller', None)
+        if ctrl is None or not ctrl.is_connected:
             return
         try:
-            smc.set_light_state(red_on, green_on)
+            ctrl.set_light_state(red_on, green_on)
         except Exception as e:  # noqa: BLE001
             log_warning(f"设置指示灯失败: {e}")
 

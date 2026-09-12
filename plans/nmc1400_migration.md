@@ -17,10 +17,11 @@ core/nmc_sdk.py           NMCSDK —— MCDLL_NET.dll 的 ctypes 封装
         │
         ▼
 MCDLL_NET.dll             NMC1400（摩升泰）4 轴网络总线运动控制卡
-
-core/smcsh_dll.py         【遗留】SMC6480 旧卡封装，保留但已不再被引用
-smcsh_mbs.dll             【遗留】SMC6480 旧卡库
 ```
+
+> SMC6480 的遗留文件（`core/smcsh_dll.py`、`smcsh_mbs.dll`、`smcsh_mbs_func_list.txt`、
+> `tests/diag_smc_home.py`、`tests/test_dll_hanshu.py`、`plans/smc6480_axis_control_plan.md`）
+> **已全部删除**。需要回退旧卡时，从 git 历史取回（删除前的提交见本文件末尾的提交号）。
 
 ## 二、底层坑位（已核对并写进代码注释）
 
